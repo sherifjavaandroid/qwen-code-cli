@@ -23,7 +23,129 @@ Qwen Code / Cursor / Cline  ──►  this proxy (/v1/chat/completions)  ──
 
 ---
 
-## Quick start
+## 🚀 Get started in 5 minutes
+
+Do these 3 steps and you'll have a **free** coding agent (`qwen` and/or `codex`).
+
+### Step 1 — Deploy your own proxy (one click)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/sherifjavaandroid/qwen-code-cli)
+
+Click the button → sign in to Vercel → **Deploy**. When it finishes, copy your
+URL (looks like `https://your-name.vercel.app`).
+
+<sub>Prefer the terminal? `npm i -g vercel && vercel --prod` inside the cloned repo.</sub>
+
+### Step 2 — Get your free token
+
+1. Open **<https://chat.qwen.ai>** and log in.
+2. Press **F12** → **Application** → **Local Storage** → `https://chat.qwen.ai`.
+3. Copy the **`token`** value (a long string starting with `eyJ...`).
+
+That token is your free key. (When it stops working, just grab a fresh one.)
+
+### Step 3 — Use it with your tool
+
+<details open>
+<summary><b>🟢 Qwen Code</b></summary>
+
+```bash
+npm i -g @qwen-code/qwen-code
+```
+
+Create **`~/.qwen/.env`** (Windows: `C:\Users\<you>\.qwen\.env`):
+```
+OPENAI_API_KEY=PASTE_YOUR_TOKEN
+OPENAI_BASE_URL=https://your-name.vercel.app/v1
+OPENAI_MODEL=qwen3.7-max
+```
+
+Create/edit **`~/.qwen/settings.json`**:
+```json
+{ "security": { "auth": { "selectedType": "openai" } }, "model": { "name": "qwen3.7-max" } }
+```
+
+Run it:
+```bash
+qwen
+```
+</details>
+
+<details open>
+<summary><b>🔵 OpenAI Codex</b></summary>
+
+```bash
+npm i -g @openai/codex
+```
+
+Set your token as an environment variable (persistent):
+```powershell
+# Windows PowerShell
+[Environment]::SetEnvironmentVariable("QWEN_TOKEN", "PASTE_YOUR_TOKEN", "User")
+```
+```bash
+# macOS / Linux — add to ~/.zshrc or ~/.bashrc
+export QWEN_TOKEN="PASTE_YOUR_TOKEN"
+```
+
+Create **`~/.codex/config.toml`**:
+```toml
+model_provider = "qwen-free"
+model = "qwen3.7-max"
+model_context_window = 262144
+model_max_output_tokens = 32768
+
+[model_providers.qwen-free]
+name = "Qwen Free"
+base_url = "https://your-name.vercel.app/v1"
+env_key = "QWEN_TOKEN"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Run it (open a fresh terminal first so the token is loaded):
+```bash
+codex
+```
+</details>
+
+**That's it — you now have a free agent that writes files and runs commands.** 🎉
+More detail: [Qwen Code guide](docs/qwen-code-setup.md) · [Codex guide](docs/codex-setup.md)
+
+---
+
+## 🚀 ابدأ خلال 5 دقائق (شرح بالعربي)
+
+اتبع 3 خطوات وسيصبح لديك مساعد برمجة **مجاني** (`qwen` و/أو `codex`).
+
+### الخطوة 1 — انشر البروكسي الخاص بك (بضغطة واحدة)
+
+اضغط زر **Deploy with Vercel** بالأعلى → سجّل الدخول في Vercel → اضغط **Deploy**.
+بعد الانتهاء انسخ الرابط (يكون بالشكل `https://your-name.vercel.app`).
+
+### الخطوة 2 — احصل على التوكن المجاني
+
+1. افتح **<https://chat.qwen.ai>** وسجّل الدخول.
+2. اضغط **F12** ← **Application** ← **Local Storage** ← `https://chat.qwen.ai`.
+3. انسخ قيمة **`token`** (نص طويل يبدأ بـ `eyJ...`). هذا هو مفتاحك المجاني.
+
+### الخطوة 3 — استخدمه مع أداتك
+
+**Qwen Code:** ثبّت `npm i -g @qwen-code/qwen-code`، ثم أنشئ ملف `~/.qwen/.env`
+وضع فيه `OPENAI_API_KEY` (التوكن) و`OPENAI_BASE_URL` (رابط البروكسي + `/v1`)
+و`OPENAI_MODEL=qwen3.7-max`، واضبط `~/.qwen/settings.json` على
+`selectedType: "openai"` (انظر البلوكات بالأعلى)، ثم شغّل `qwen`.
+
+**Codex:** ثبّت `npm i -g @openai/codex`، اضبط متغير البيئة `QWEN_TOKEN` بالتوكن،
+وأنشئ `~/.codex/config.toml` كما بالأعلى (مع `wire_api = "responses"` ورابط
+البروكسي)، ثم شغّل `codex`.
+
+كل الطلبات تستخدم **التوكن الخاص بك** — لا شيء يُخزَّن أو يُشارَك. عند انتهاء صلاحية
+التوكن، احصل على واحد جديد بنفس الطريقة.
+
+---
+
+## Deploy options (detailed)
 
 ### A. Deploy your own proxy (recommended)
 
