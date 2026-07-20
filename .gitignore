@@ -1,0 +1,12 @@
+node_modules/
+dist/
+logs/
+*.log
+.env
+.env.local
+.vercel
+
+# personal notes / scratch
+idea.txt
+new idea.txt
+*.local.*

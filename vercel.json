@@ -1,0 +1,10 @@
+{
+    "buildCommand": "npx tsup src/vercel.ts --format esm --platform node --target node18 --out-dir api --sourcemap=false",
+    "outputDirectory": "public",
+    "rewrites": [
+        {
+            "source": "/(.*)",
+            "destination": "/api/vercel"
+        }
+    ]
+}

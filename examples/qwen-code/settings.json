@@ -1,0 +1,34 @@
+{
+  "//": "Copy to C:\\Users\\<you>\\.qwen\\settings.json (Windows) or ~/.qwen/settings.json. This switches Qwen Code to the OpenAI-compatible proxy and adds optional MCP servers. See docs/qwen-code-setup.md.",
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "qwen3.7-max"
+  },
+  "mcpServers": {
+    "sequential-thinking": {
+      "command": "node",
+      "args": ["<PATH_TO_GLOBAL_NODE_MODULES>/@modelcontextprotocol/server-sequential-thinking/dist/index.js"]
+    },
+    "memory": {
+      "command": "node",
+      "args": ["<PATH_TO_GLOBAL_NODE_MODULES>/@modelcontextprotocol/server-memory/dist/index.js"]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git"]
+    },
+    "playwright": {
+      "command": "node",
+      "args": ["<PATH_TO_GLOBAL_NODE_MODULES>/@playwright/mcp/cli.js"],
+      "timeout": 60000
+    }
+  }
+}

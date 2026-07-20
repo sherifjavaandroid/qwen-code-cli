@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  qwen-free-api:
+    container_name: qwen-free-api
+    image: qwen-free-api:latest
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - QWEN_AUTHORIZATION=your_token_here

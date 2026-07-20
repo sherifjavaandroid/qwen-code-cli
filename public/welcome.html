@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Qwen Free API Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; width: 100%; display: flex; flex-direction: column; flex: 1; }
+        html { height: 100%; }
+        h1 { text-align: center; margin: 30px 0 10px; font-size: 28px; color: #f1f5f9; }
+        .subtitle { text-align: center; color: #64748b; margin-bottom: 30px; font-size: 14px; }
+        body.chat-active { height: 100%; }
+        body.chat-active .container { min-height: 0; }
+        body.chat-active h1 { margin: 10px 0 4px; font-size: 22px; }
+        body.chat-active .subtitle { margin-bottom: 10px; font-size: 12px; }
+        body.chat-active .tabs { margin-bottom: 10px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+        .tab { flex: 1; padding: 12px; border: 1px solid #334155; background: #1e293b; color: #94a3b8; border-radius: 8px; cursor: pointer; text-align: center; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+        .tab.active { background: #8b5cf6; color: #fff; border-color: #8b5cf6; }
+        .tab:hover:not(.active) { background: #334155; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+        .card h2 { font-size: 18px; margin-bottom: 16px; color: #f1f5f9; display: flex; align-items: center; gap: 8px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .status-dot.online { background: #22c55e; }
+        .status-dot.offline { background: #ef4444; }
+        label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; font-weight: 500; }
+        .input-group { margin-bottom: 16px; }
+        input[type="text"], input[type="password"], textarea { width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-size: 14px; font-family: monospace; outline: none; transition: border-color 0.2s; }
+        input:focus, textarea:focus { border-color: #8b5cf6; }
+        textarea { resize: vertical; min-height: 80px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .btn-primary { background: #8b5cf6; color: #fff; }
+        .btn-primary:hover { background: #7c3aed; }
+        .btn-success { background: #22c55e; color: #fff; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-danger { background: #ef4444; color: #fff; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-secondary { background: #334155; color: #e2e8f0; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .chat-box { background: #0f172a; border: 1px solid #334155; border-radius: 8px; min-height: 300px; overflow-y: auto; padding: 16px; margin-bottom: 16px; flex: 1; }
+        #tab-chat { display: none; flex-direction: column; flex: 1; }
+        #tab-chat:not(.hidden) { display: flex; }
+        #tab-chat > .card { display: flex; flex-direction: column; flex: 1; }
+        .msg { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; max-width: 85%; word-wrap: break-word; line-height: 1.6; font-size: 14px; }
+        .msg.user { background: #8b5cf6; color: #fff; margin-left: auto; }
+        .msg.assistant { background: #334155; color: #e2e8f0; }
+        .msg.system { background: #1e293b; color: #94a3b8; text-align: center; max-width: 100%; font-size: 13px; }
+        .msg .thinking { color: #94a3b8; font-style: italic; font-size: 13px; border-left: 2px solid #64748b; padding-left: 10px; margin-bottom: 8px; white-space: pre-wrap; }
+        .chat-input-area { display: flex; flex-direction: column; gap: 8px; }
+        .chat-input { display: flex; gap: 8px; }
+        .chat-input input { flex: 1; }
+        .model-select { padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-size: 14px; outline: none; cursor: pointer; }
+        .model-select:focus { border-color: #8b5cf6; }
+        .endpoint-info { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; margin-top: 12px; font-family: monospace; font-size: 13px; color: #94a3b8; word-break: break-all; }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-size: 14px; z-index: 1000; animation: slideIn 0.3s ease; }
+        .toast.success { background: #22c55e; color: #fff; }
+        .toast.error { background: #ef4444; color: #fff; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .hidden { display: none; }
+        .flex-between { display: flex; justify-content: space-between; align-items: center; }
+
+        .code-block { position: relative; margin: 8px 0; border-radius: 6px; overflow: hidden; background: #0f172a; border: 1px solid #475569; }
+        .code-header { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: #1e293b; border-bottom: 1px solid #475569; font-size: 12px; color: #64748b; }
+        .code-header .lang { text-transform: uppercase; font-weight: 600; }
+        .copy-btn { background: transparent; border: 1px solid #475569; color: #94a3b8; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s; }
+        .copy-btn:hover { background: #334155; color: #e2e8f0; }
+        .copy-btn.copied { background: #22c55e; color: #fff; border-color: #22c55e; }
+        .code-block pre { margin: 0; padding: 12px; overflow-x: auto; font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace; font-size: 13px; line-height: 1.5; color: #e2e8f0; }
+        .code-block code { font-family: inherit; }
+        .msg .inline-code { background: #0f172a; padding: 2px 6px; border-radius: 3px; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; color: #c084fc; border: 1px solid #334155; }
+        .msg a { color: #a78bfa; text-decoration: none; }
+        .msg a:hover { text-decoration: underline; }
+        .msg strong { font-weight: 600; }
+        .msg em { font-style: italic; color: #cbd5e1; }
+        .msg ul, .msg ol { padding-left: 20px; margin: 4px 0; }
+        .msg li { margin: 2px 0; }
+
+        .guide-section { margin-bottom: 24px; }
+        .guide-section h3 { font-size: 16px; color: #f1f5f9; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .guide-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .guide-table th { text-align: left; padding: 10px 12px; background: #0f172a; color: #94a3b8; font-weight: 600; border-bottom: 2px solid #334155; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .guide-table td { padding: 10px 12px; border-bottom: 1px solid #1e293b; vertical-align: middle; }
+        .guide-table tr:hover td { background: #1a2540; }
+        .guide-table .model-name { font-family: monospace; color: #a78bfa; font-weight: 500; white-space: nowrap; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin: 1px 2px; white-space: nowrap; }
+        .badge-text { background: #1e3a5f; color: #60a5fa; }
+        .badge-vision { background: #3b1f5e; color: #c084fc; }
+        .badge-code { background: #1a3a2a; color: #4ade80; }
+        .badge-think { background: #3b2f1a; color: #fbbf24; }
+        .badge-search { background: #1a3a3a; color: #2dd4bf; }
+        .badge-math { background: #2a2a1a; color: #facc15; }
+        .guide-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; padding: 12px; background: #0f172a; border-radius: 8px; border: 1px solid #334155; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }
+        .guide-tip { background: #2e1065; border: 1px solid #4c1d95; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #c4b5fd; line-height: 1.6; }
+        .guide-tip strong { color: #a78bfa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Qwen Free API Dashboard</h1>
+        <p class="subtitle">Convert chat.qwen.ai into OpenAI-compatible API</p>
+
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('settings')">Settings</div>
+            <div class="tab" onclick="switchTab('chat')">Chat</div>
+            <div class="tab" onclick="switchTab('models')">Models Guide</div>
+            <div class="tab" onclick="switchTab('endpoints')">API Endpoints</div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="tab-settings">
+            <div class="card">
+                <h2><span class="status-dot" id="qwen-status"></span> Qwen (Alibaba)</h2>
+                <div class="input-group">
+                    <label>API Base URL</label>
+                    <input type="text" id="qwen-url" placeholder="http://localhost:8000" />
+                </div>
+                <div class="input-group">
+                    <label>JWT Token (from chat.qwen.ai localStorage)</label>
+                    <input type="password" id="qwen-token" placeholder="Paste your JWT token from chat.qwen.ai here..." />
+                </div>
+                <div class="btn-row">
+                    <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+                    <button class="btn btn-secondary" onclick="toggleVisibility('qwen-token')">Show/Hide</button>
+                    <button class="btn btn-success" onclick="testConnection()">Test Connection</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Quick Setup</h2>
+                <p style="color:#94a3b8;font-size:14px;line-height:1.6;margin-bottom:12px">
+                    1. Login to <strong style="color:#a78bfa">chat.qwen.ai</strong><br/>
+                    2. Open DevTools (F12) &rarr; Console &rarr; type <code style="background:#334155;padding:2px 6px;border-radius:4px;font-size:13px;color:#c084fc">localStorage.getItem('token')</code><br/>
+                    3. Copy the JWT token (starts with <code style="background:#334155;padding:2px 6px;border-radius:4px;font-size:13px;color:#c084fc">eyJ...</code>)<br/>
+                    4. Paste it above and click Save
+                </p>
+                <p style="color:#64748b;font-size:13px">
+                    Use <code style="background:#334155;padding:2px 6px;border-radius:4px;font-size:12px;color:#c084fc">guest</code> as token for guest mode (no login required, limited functionality).
+                    Supports multiple tokens separated by commas for load balancing.
+                </p>
+            </div>
+        </div>
+
+        <!-- Chat Tab -->
+        <div id="tab-chat" class="hidden">
+            <div class="card">
+                <div class="flex-between" style="margin-bottom:16px">
+                    <h2 style="margin:0">Chat</h2>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select class="model-select" id="chat-model">
+                            <option value="qwen-plus">Qwen Plus (3.5)</option>
+                            <option value="qwen-max">Qwen Max (3.6)</option>
+                            <option value="qwen-turbo">Qwen Turbo</option>
+                            <option value="qwen-think">Qwen Think</option>
+                            <option value="qwen-search">Qwen Search</option>
+                            <option value="qwen-think-search">Qwen Think + Search</option>
+                        </select>
+                        <button class="btn btn-danger" onclick="clearChat()" style="padding:8px 14px">Clear</button>
+                    </div>
+                </div>
+                <div class="chat-box" id="chat-box">
+                    <div class="msg system">Select a model and start chatting.</div>
+                </div>
+                <div class="chat-input-area">
+                    <div class="chat-input">
+                        <input type="text" id="chat-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()" />
+                        <button class="btn btn-primary" onclick="sendMessage()" id="send-btn">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Models Guide Tab -->
+        <div id="tab-models" class="hidden">
+            <div class="card">
+                <h2>Models Guide</h2>
+                <p style="color:#94a3b8;margin-bottom:16px;font-size:14px">Choose the right model for your task. Each model has different capabilities.</p>
+                <div class="guide-legend">
+                    <div class="legend-item"><span class="badge badge-text">Text</span> General chat</div>
+                    <div class="legend-item"><span class="badge badge-code">Code</span> Code generation</div>
+                    <div class="legend-item"><span class="badge badge-think">Think</span> Deep reasoning</div>
+                    <div class="legend-item"><span class="badge badge-search">Search</span> Web search</div>
+                    <div class="legend-item"><span class="badge badge-math">Math</span> Mathematics</div>
+                </div>
+            </div>
+
+            <!-- Qwen Models -->
+            <div class="card guide-section">
+                <h3>Qwen Models (Alibaba Cloud)</h3>
+                <div class="guide-tip">
+                    <strong>How to get token:</strong> Login to <strong>chat.qwen.ai</strong> &rarr; Open DevTools (F12) &rarr; Console &rarr; Run <strong>localStorage.getItem('token')</strong> &rarr; Copy the JWT string. Supports multiple tokens: <strong>token1,token2,token3</strong>
+                </div>
+                <table class="guide-table">
+                    <thead>
+                        <tr><th>Model</th><th>Maps To</th><th>Capabilities</th><th>Best For</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="model-name">qwen-plus</td>
+                            <td class="model-name" style="color:#64748b">qwen3.5-plus</td>
+                            <td>
+                                <span class="badge badge-text">Text</span>
+                                <span class="badge badge-code">Code</span>
+                            </td>
+                            <td class="guide-desc">General purpose, balanced speed and quality</td>
+                        </tr>
+                        <tr>
+                            <td class="model-name">qwen-turbo</td>
+                            <td class="model-name" style="color:#64748b">qwen3.5-plus</td>
+                            <td>
+                                <span class="badge badge-text">Text</span>
+                                <span class="badge badge-code">Code</span>
+                            </td>
+                            <td class="guide-desc">Fast responses, alias for qwen-plus</td>
+                        </tr>
+                        <tr>
+                            <td class="model-name">qwen-max</td>
+                            <td class="model-name" style="color:#64748b">qwen3.6-plus</td>
+                            <td>
+                                <span class="badge badge-text">Text</span>
+                                <span class="badge badge-code">Code</span>
+                                <span class="badge badge-math">Math</span>
+                            </td>
+                            <td class="guide-desc">Most capable, complex tasks, advanced reasoning</td>
+                        </tr>
+                        <tr>
+                            <td class="model-name">qwen-think</td>
+                            <td class="model-name" style="color:#64748b">qwen3.5-plus</td>
+                            <td>
+                                <span class="badge badge-text">Text</span>
+                                <span class="badge badge-think">Think</span>
+                                <span class="badge badge-code">Code</span>
+                                <span class="badge badge-math">Math</span>
+                            </td>
+                            <td class="guide-desc">Step-by-step reasoning, shows thinking process</td>
+                        </tr>
+                        <tr>
+                            <td class="model-name">qwen-search</td>
+                            <td class="model-name" style="color:#64748b">qwen3.5-plus</td>
+                            <td>
+                                <span class="badge badge-text">Text</span>
+                                <span class="badge badge-search">Search</span>
+                            </td>
+                            <td class="guide-desc">Web search, up-to-date information, fact-checking</td>
+                        </tr>
+                        <tr>
+                            <td class="model-name">qwen-think-search</td>
+                            <td class="model-name" style="color:#64748b">qwen3.5-plus</td>
+                            <td>
+                                <span class="badge badge-think">Think</span>
+                                <span class="badge badge-search">Search</span>
+                                <span class="badge badge-text">Text</span>
+                            </td>
+                            <td class="guide-desc">Deep reasoning combined with real-time web data</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Direct Model Names -->
+            <div class="card guide-section">
+                <h3>Direct Model Names</h3>
+                <p style="color:#94a3b8;margin-bottom:12px;font-size:13px">You can also use the underlying Qwen model names directly:</p>
+                <table class="guide-table">
+                    <thead><tr><th>Model</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td class="model-name">qwen3.5-plus</td><td class="guide-desc">Qwen 3.5 Plus - balanced performance</td></tr>
+                        <tr><td class="model-name">qwen3.6-plus</td><td class="guide-desc">Qwen 3.6 Plus - latest and most capable</td></tr>
+                        <tr><td class="model-name">qwen3-plus</td><td class="guide-desc">Alias for qwen3.5-plus</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Quick Recommendations -->
+            <div class="card">
+                <h3 style="font-size:16px;color:#f1f5f9;margin-bottom:12px">Quick Recommendations</h3>
+                <table class="guide-table">
+                    <thead><tr><th>I want to...</th><th>Recommended Model</th></tr></thead>
+                    <tbody>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Chat / Write text</td><td class="model-name">qwen-plus</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Write / Debug code</td><td class="model-name">qwen-max</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Solve math / logic</td><td class="model-name">qwen-think</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Search the web</td><td class="model-name">qwen-search</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Research with reasoning</td><td class="model-name">qwen-think-search</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Fast answers</td><td class="model-name">qwen-turbo</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Endpoints Tab -->
+        <div id="tab-endpoints" class="hidden">
+            <div class="card">
+                <h2>API Usage</h2>
+                <p style="color:#94a3b8;margin-bottom:16px;font-size:14px">Use these endpoints with any OpenAI-compatible client (LobeChat, NextChat, etc.)</p>
+                <div class="input-group">
+                    <label>Chat Completions</label>
+                    <div class="endpoint-info" id="endpoint-completions">Not configured</div>
+                </div>
+                <div class="input-group">
+                    <label>Models List</label>
+                    <div class="endpoint-info" id="endpoint-models">Not configured</div>
+                </div>
+                <div class="input-group">
+                    <label>Token Check</label>
+                    <div class="endpoint-info" id="endpoint-token">Not configured</div>
+                </div>
+                <div class="input-group">
+                    <label>Health Check</label>
+                    <div class="endpoint-info" id="endpoint-ping">Not configured</div>
+                </div>
+                <div class="input-group" style="margin-top:20px">
+                    <label>Example curl</label>
+                    <textarea id="curl-example" readonly rows="6" style="font-size:12px"></textarea>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Client Configuration</h2>
+                <p style="color:#94a3b8;margin-bottom:16px;font-size:14px">Use these settings in your OpenAI-compatible client:</p>
+                <table class="guide-table">
+                    <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+                    <tbody>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">API Base URL</td><td class="model-name" id="client-base">-</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">API Key</td><td class="guide-desc">Your Qwen JWT token</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Model</td><td class="model-name">qwen-plus</td></tr>
+                        <tr><td class="guide-desc" style="color:#e2e8f0">Guest Mode</td><td class="guide-desc">Use <code style="background:#334155;padding:2px 6px;border-radius:4px;font-size:12px;color:#c084fc">guest</code> as the API key</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+<script>
+var chatMessages = [];
+var isStreaming = false;
+
+function getConfig() {
+    return {
+        url: localStorage.getItem('qwen_url') || '',
+        token: localStorage.getItem('qwen_token') || '',
+    };
+}
+
+function init() {
+    var conf = getConfig();
+    document.getElementById('qwen-url').value = conf.url || window.location.origin;
+    document.getElementById('qwen-token').value = conf.token;
+    updateEndpoints();
+    testConnection();
+}
+
+function switchTab(name) {
+    document.querySelectorAll('.tabs .tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('[id^="tab-"]').forEach(function(t) { t.classList.add('hidden'); });
+    event.target.classList.add('active');
+    document.getElementById('tab-' + name).classList.remove('hidden');
+    if (name === 'chat') {
+        document.body.classList.add('chat-active');
+    } else {
+        document.body.classList.remove('chat-active');
+    }
+}
+
+function saveSettings() {
+    var url = document.getElementById('qwen-url').value.trim().replace(/\/$/, '');
+    var token = document.getElementById('qwen-token').value.trim();
+    localStorage.setItem('qwen_url', url);
+    localStorage.setItem('qwen_token', token);
+    showToast('Settings saved!', 'success');
+    updateEndpoints();
+    testConnection();
+}
+
+function toggleVisibility(id) {
+    var input = document.getElementById(id);
+    input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function testConnection() {
+    var url = document.getElementById('qwen-url').value.trim().replace(/\/$/, '');
+    var dot = document.getElementById('qwen-status');
+    dot.className = 'status-dot';
+    if (!url) { dot.classList.add('offline'); return; }
+    try {
+        var res = await fetch(url + '/ping', { signal: AbortSignal.timeout(5000) });
+        dot.classList.add(res.ok ? 'online' : 'offline');
+    } catch(e) {
+        dot.classList.add('offline');
+    }
+}
+
+function updateEndpoints() {
+    var url = document.getElementById('qwen-url').value.trim().replace(/\/$/, '') || window.location.origin;
+    var token = document.getElementById('qwen-token').value.trim() || '<YOUR_JWT_TOKEN>';
+    document.getElementById('endpoint-completions').textContent = 'POST ' + url + '/v1/chat/completions';
+    document.getElementById('endpoint-models').textContent = 'GET ' + url + '/v1/models';
+    document.getElementById('endpoint-token').textContent = 'POST ' + url + '/token/check';
+    document.getElementById('endpoint-ping').textContent = 'GET ' + url + '/ping';
+    document.getElementById('client-base').textContent = url + '/v1';
+    document.getElementById('curl-example').value =
+        'curl ' + url + '/v1/chat/completions \\\n' +
+        '  -H "Content-Type: application/json" \\\n' +
+        '  -H "Authorization: Bearer ' + token + '" \\\n' +
+        '  -d \'{"model":"qwen-plus","messages":[{"role":"user","content":"Hello"}],"stream":true}\'';
+}
+
+function clearChat() {
+    chatMessages = [];
+    document.getElementById('chat-box').innerHTML = '<div class="msg system">Chat cleared.</div>';
+}
+
+// --- Markdown rendering ---
+function escapeHtml(text) {
+    var d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+function renderMarkdown(text) {
+    if (!text) return '';
+    var codeBlocks = [];
+    var processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
+        var index = codeBlocks.length;
+        codeBlocks.push({ lang: lang || 'text', code: code.replace(/\n$/, '') });
+        return '\x00CODEBLOCK_' + index + '\x00';
+    });
+    processed = escapeHtml(processed);
+    processed = processed.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+    processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    processed = processed.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    processed = processed.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+    processed = processed.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+    processed = processed.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    processed = processed.replace(/\x00CODEBLOCK_(\d+)\x00/g, function(match, idx) {
+        var block = codeBlocks[parseInt(idx)];
+        var id = 'code-' + Date.now() + '-' + idx;
+        return '<div class="code-block"><div class="code-header"><span class="lang">' + escapeHtml(block.lang) + '</span><button class="copy-btn" onclick="copyCode(this, \'' + id + '\')">Copy</button></div><pre><code id="' + id + '">' + escapeHtml(block.code) + '</code></pre></div>';
+    });
+    processed = processed.replace(/\n/g, '<br/>');
+    return processed;
+}
+
+function copyCode(btn, codeId) {
+    var codeEl = document.getElementById(codeId);
+    if (!codeEl) return;
+    navigator.clipboard.writeText(codeEl.textContent).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    });
+}
+
+// --- Message display ---
+function appendMsg(role, content, thinking) {
+    var box = document.getElementById('chat-box');
+    var div = document.createElement('div');
+    div.className = 'msg ' + role;
+    if (role === 'assistant') {
+        var html = '';
+        if (thinking) html += '<div class="thinking">' + escapeHtml(thinking) + '</div>';
+        html += renderMarkdown(content);
+        div.innerHTML = html;
+    } else if (role === 'user') {
+        div.innerHTML = escapeHtml(content);
+    } else {
+        div.textContent = content;
+    }
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    return div;
+}
+
+function updateAssistantMsg(div, content, thinking) {
+    var html = '';
+    if (thinking) html += '<div class="thinking">' + escapeHtml(thinking) + '</div>';
+    html += renderMarkdown(content || '...');
+    div.innerHTML = html;
+}
+
+// --- Send message ---
+async function sendMessage() {
+    if (isStreaming) return;
+    var input = document.getElementById('chat-input');
+    var text = input.value.trim();
+    if (!text) return;
+
+    var model = document.getElementById('chat-model').value;
+    var url = document.getElementById('qwen-url').value.trim().replace(/\/$/, '');
+    var token = document.getElementById('qwen-token').value.trim();
+
+    if (!url || !token) {
+        showToast('Configure URL and token in Settings first!', 'error');
+        return;
+    }
+
+    chatMessages.push({ role: 'user', content: text });
+    appendMsg('user', text);
+    input.value = '';
+
+    var assistantDiv = appendMsg('assistant', '...');
+    var sendBtn = document.getElementById('send-btn');
+    sendBtn.textContent = '...';
+    isStreaming = true;
+
+    try {
+        var res = await fetch(url + '/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify({ model: model, messages: chatMessages, stream: true }),
+        });
+        if (!res.ok) {
+            var err = await res.text();
+            throw new Error(err);
+        }
+
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var content = '';
+        var reasoning = '';
+        var buffer = '';
+
+        while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (var i = 0; i < lines.length; i++) {
+                var trimmed = lines[i].trim();
+                if (!trimmed || trimmed.indexOf('data: ') !== 0) continue;
+                var data = trimmed.slice(6);
+                if (data === '[DONE]') continue;
+                try {
+                    var parsed = JSON.parse(data);
+                    var delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
+                    if (delta && delta.content) content += delta.content;
+                    if (delta && delta.reasoning_content) reasoning += delta.reasoning_content;
+                } catch(e) {}
+            }
+            updateAssistantMsg(assistantDiv, content, reasoning);
+            document.getElementById('chat-box').scrollTop = document.getElementById('chat-box').scrollHeight;
+        }
+        chatMessages.push({ role: 'assistant', content: content });
+    } catch (err) {
+        assistantDiv.innerHTML = '<span style="color:#ef4444">Error: ' + escapeHtml(err.message) + '</span>';
+    } finally {
+        isStreaming = false;
+        sendBtn.textContent = 'Send';
+    }
+}
+
+function showToast(msg, type) {
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.remove(); }, 3000);
+}
+
+init();
+</script>
+</body>
+</html>
