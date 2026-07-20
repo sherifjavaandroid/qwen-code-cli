@@ -1754,12 +1754,7 @@ function buildResponsesOutput(textContent, toolCalls) {
 async function createResponses(model, body, token) {
   const { instructions, input, tools, tool_choice } = body;
   const content = prepareResponsesPrompt(instructions, input, tools);
-  const { responseContent } = await fetchQwenAnswer(
-    model,
-    content,
-    token,
-    body.previous_response_id
-  );
+  const { responseContent } = await fetchQwenAnswer(model, content, token);
   const useTools = _12.isArray(tools) && tools.length > 0 && tool_choice !== "none";
   let textContent = responseContent;
   let toolCalls = [];
@@ -1779,103 +1774,127 @@ async function createResponses(model, body, token) {
     usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
   };
 }
-async function createResponsesStream(model, body, token) {
+function createResponsesStream(model, body, token) {
   const { instructions, input, tools, tool_choice } = body;
   const content = prepareResponsesPrompt(instructions, input, tools);
-  const { responseContent } = await fetchQwenAnswer(
-    model,
-    content,
-    token,
-    body.previous_response_id
-  );
   const useTools = _12.isArray(tools) && tools.length > 0 && tool_choice !== "none";
-  let textContent = responseContent;
-  let toolCalls = [];
-  if (useTools) {
-    const parsed = parseToolCalls(responseContent);
-    textContent = parsed.content;
-    toolCalls = parsed.toolCalls;
-  }
-  const output = buildResponsesOutput(textContent, toolCalls);
   const respId = `resp_${util_default.uuid(false).slice(0, 24)}`;
   const ts = new PassThrough();
   let seq = 0;
-  const emit = (type, obj) => ts.write(
-    `event: ${type}
+  const emit = (type, obj) => {
+    try {
+      ts.write(
+        `event: ${type}
 data: ${JSON.stringify({
-      type,
-      sequence_number: seq++,
-      ...obj
-    })}
+          type,
+          sequence_number: seq++,
+          ...obj
+        })}
 
 `
-  );
-  const resp = (status, out) => ({
+      );
+    } catch {
+    }
+  };
+  const resp = (status, out, error) => ({
     id: respId,
     object: "response",
     created_at: util_default.unixTimestamp(),
     status,
     model,
     output: out,
+    error: error || null,
     usage: status === "completed" ? { input_tokens: 1, output_tokens: 1, total_tokens: 2 } : null
   });
   emit("response.created", { response: resp("in_progress", []) });
   emit("response.in_progress", { response: resp("in_progress", []) });
-  let idx = 0;
-  for (const item of output) {
-    if (item.type === "message") {
-      const text = item.content[0].text;
-      emit("response.output_item.added", {
-        output_index: idx,
-        item: { ...item, status: "in_progress", content: [] }
-      });
-      emit("response.content_part.added", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        part: { type: "output_text", text: "", annotations: [] }
-      });
-      emit("response.output_text.delta", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        delta: text
-      });
-      emit("response.output_text.done", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        text
-      });
-      emit("response.content_part.done", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        part: item.content[0]
-      });
-      emit("response.output_item.done", { output_index: idx, item });
-    } else if (item.type === "function_call") {
-      emit("response.output_item.added", {
-        output_index: idx,
-        item: { ...item, status: "in_progress", arguments: "" }
-      });
-      emit("response.function_call_arguments.delta", {
-        item_id: item.id,
-        output_index: idx,
-        delta: item.arguments
-      });
-      emit("response.function_call_arguments.done", {
-        item_id: item.id,
-        output_index: idx,
-        arguments: item.arguments
-      });
-      emit("response.output_item.done", { output_index: idx, item });
+  const heartbeat = setInterval(() => {
+    try {
+      ts.write(`: keepalive
+
+`);
+    } catch {
     }
-    idx++;
-  }
-  emit("response.completed", { response: resp("completed", output) });
-  ts.write("data: [DONE]\n\n");
-  ts.end();
+  }, 5e3);
+  (async () => {
+    try {
+      const { responseContent } = await fetchQwenAnswer(model, content, token);
+      let textContent = responseContent;
+      let toolCalls = [];
+      if (useTools) {
+        const parsed = parseToolCalls(responseContent);
+        textContent = parsed.content;
+        toolCalls = parsed.toolCalls;
+      }
+      const output = buildResponsesOutput(textContent, toolCalls);
+      let idx = 0;
+      for (const item of output) {
+        if (item.type === "message") {
+          const text = item.content[0].text;
+          emit("response.output_item.added", {
+            output_index: idx,
+            item: { ...item, status: "in_progress", content: [] }
+          });
+          emit("response.content_part.added", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            part: { type: "output_text", text: "", annotations: [] }
+          });
+          emit("response.output_text.delta", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            delta: text
+          });
+          emit("response.output_text.done", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            text
+          });
+          emit("response.content_part.done", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            part: item.content[0]
+          });
+          emit("response.output_item.done", { output_index: idx, item });
+        } else if (item.type === "function_call") {
+          emit("response.output_item.added", {
+            output_index: idx,
+            item: { ...item, status: "in_progress", arguments: "" }
+          });
+          emit("response.function_call_arguments.delta", {
+            item_id: item.id,
+            output_index: idx,
+            delta: item.arguments
+          });
+          emit("response.function_call_arguments.done", {
+            item_id: item.id,
+            output_index: idx,
+            arguments: item.arguments
+          });
+          emit("response.output_item.done", { output_index: idx, item });
+        }
+        idx++;
+      }
+      emit("response.completed", { response: resp("completed", output) });
+      ts.write("data: [DONE]\n\n");
+    } catch (err) {
+      logger_default.error("responses stream error:", err?.message || err);
+      emit("response.failed", {
+        response: resp("failed", [], {
+          code: "upstream_error",
+          message: String(err?.message || err)
+        })
+      });
+      ts.write("data: [DONE]\n\n");
+    } finally {
+      clearInterval(heartbeat);
+      ts.end();
+    }
+  })();
   return ts;
 }
 var chat_default = {

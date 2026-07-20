@@ -1036,12 +1036,7 @@ function buildResponsesOutput(textContent: string, toolCalls: any[]): any[] {
 async function createResponses(model: string, body: any, token: string) {
   const { instructions, input, tools, tool_choice } = body;
   const content = prepareResponsesPrompt(instructions, input, tools);
-  const { responseContent } = await fetchQwenAnswer(
-    model,
-    content,
-    token,
-    body.previous_response_id
-  );
+  const { responseContent } = await fetchQwenAnswer(model, content, token);
   const useTools =
     _.isArray(tools) && tools.length > 0 && tool_choice !== "none";
   let textContent = responseContent;
@@ -1063,110 +1058,144 @@ async function createResponses(model: string, body: any, token: string) {
   };
 }
 
-/** 流式 Responses（缓冲后按 SSE 事件序列回放） */
-async function createResponsesStream(model: string, body: any, token: string) {
+/**
+ * 流式 Responses。立即返回流并先发送 response.created，随后在后台请求
+ * chat.qwen.ai；生成期间发送 SSE 心跳，避免客户端（如 Codex）因长时间
+ * 无字节而断开（"stream closed before response.completed"）。
+ */
+function createResponsesStream(model: string, body: any, token: string) {
   const { instructions, input, tools, tool_choice } = body;
   const content = prepareResponsesPrompt(instructions, input, tools);
-  const { responseContent } = await fetchQwenAnswer(
-    model,
-    content,
-    token,
-    body.previous_response_id
-  );
   const useTools =
     _.isArray(tools) && tools.length > 0 && tool_choice !== "none";
-  let textContent = responseContent;
-  let toolCalls: any[] = [];
-  if (useTools) {
-    const parsed = parseToolCalls(responseContent);
-    textContent = parsed.content;
-    toolCalls = parsed.toolCalls;
-  }
-  const output = buildResponsesOutput(textContent, toolCalls);
   const respId = `resp_${util.uuid(false).slice(0, 24)}`;
 
   const ts = new PassThrough();
   let seq = 0;
-  const emit = (type: string, obj: any) =>
-    ts.write(
-      `event: ${type}\ndata: ${JSON.stringify({
-        type,
-        sequence_number: seq++,
-        ...obj,
-      })}\n\n`
-    );
-  const resp = (status: string, out: any[]) => ({
+  const emit = (type: string, obj: any) => {
+    try {
+      ts.write(
+        `event: ${type}\ndata: ${JSON.stringify({
+          type,
+          sequence_number: seq++,
+          ...obj,
+        })}\n\n`
+      );
+    } catch {
+      /* stream may be closed */
+    }
+  };
+  const resp = (status: string, out: any[], error?: any) => ({
     id: respId,
     object: "response",
     created_at: util.unixTimestamp(),
     status,
     model,
     output: out,
+    error: error || null,
     usage:
       status === "completed"
         ? { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
         : null,
   });
 
+  // 立即发送首批事件，让客户端马上收到字节
   emit("response.created", { response: resp("in_progress", []) });
   emit("response.in_progress", { response: resp("in_progress", []) });
 
-  let idx = 0;
-  for (const item of output) {
-    if (item.type === "message") {
-      const text = item.content[0].text;
-      emit("response.output_item.added", {
-        output_index: idx,
-        item: { ...item, status: "in_progress", content: [] },
-      });
-      emit("response.content_part.added", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        part: { type: "output_text", text: "", annotations: [] },
-      });
-      emit("response.output_text.delta", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        delta: text,
-      });
-      emit("response.output_text.done", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        text,
-      });
-      emit("response.content_part.done", {
-        item_id: item.id,
-        output_index: idx,
-        content_index: 0,
-        part: item.content[0],
-      });
-      emit("response.output_item.done", { output_index: idx, item });
-    } else if (item.type === "function_call") {
-      emit("response.output_item.added", {
-        output_index: idx,
-        item: { ...item, status: "in_progress", arguments: "" },
-      });
-      emit("response.function_call_arguments.delta", {
-        item_id: item.id,
-        output_index: idx,
-        delta: item.arguments,
-      });
-      emit("response.function_call_arguments.done", {
-        item_id: item.id,
-        output_index: idx,
-        arguments: item.arguments,
-      });
-      emit("response.output_item.done", { output_index: idx, item });
+  // 生成期间发送心跳（SSE 注释行，解析器会忽略），保持连接
+  const heartbeat = setInterval(() => {
+    try {
+      ts.write(`: keepalive\n\n`);
+    } catch {
+      /* ignore */
     }
-    idx++;
-  }
+  }, 5000);
 
-  emit("response.completed", { response: resp("completed", output) });
-  ts.write("data: [DONE]\n\n");
-  ts.end();
+  (async () => {
+    try {
+      // 注意：不把 previous_response_id 当作 chat.qwen.ai 的 chatId（两者不同），
+      // Codex 每次都会重发完整历史，因此这里保持无状态。
+      const { responseContent } = await fetchQwenAnswer(model, content, token);
+      let textContent = responseContent;
+      let toolCalls: any[] = [];
+      if (useTools) {
+        const parsed = parseToolCalls(responseContent);
+        textContent = parsed.content;
+        toolCalls = parsed.toolCalls;
+      }
+      const output = buildResponsesOutput(textContent, toolCalls);
+
+      let idx = 0;
+      for (const item of output) {
+        if (item.type === "message") {
+          const text = item.content[0].text;
+          emit("response.output_item.added", {
+            output_index: idx,
+            item: { ...item, status: "in_progress", content: [] },
+          });
+          emit("response.content_part.added", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            part: { type: "output_text", text: "", annotations: [] },
+          });
+          emit("response.output_text.delta", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            delta: text,
+          });
+          emit("response.output_text.done", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            text,
+          });
+          emit("response.content_part.done", {
+            item_id: item.id,
+            output_index: idx,
+            content_index: 0,
+            part: item.content[0],
+          });
+          emit("response.output_item.done", { output_index: idx, item });
+        } else if (item.type === "function_call") {
+          emit("response.output_item.added", {
+            output_index: idx,
+            item: { ...item, status: "in_progress", arguments: "" },
+          });
+          emit("response.function_call_arguments.delta", {
+            item_id: item.id,
+            output_index: idx,
+            delta: item.arguments,
+          });
+          emit("response.function_call_arguments.done", {
+            item_id: item.id,
+            output_index: idx,
+            arguments: item.arguments,
+          });
+          emit("response.output_item.done", { output_index: idx, item });
+        }
+        idx++;
+      }
+
+      emit("response.completed", { response: resp("completed", output) });
+      ts.write("data: [DONE]\n\n");
+    } catch (err: any) {
+      logger.error("responses stream error:", err?.message || err);
+      emit("response.failed", {
+        response: resp("failed", [], {
+          code: "upstream_error",
+          message: String(err?.message || err),
+        }),
+      });
+      ts.write("data: [DONE]\n\n");
+    } finally {
+      clearInterval(heartbeat);
+      ts.end();
+    }
+  })();
+
   return ts;
 }
 
