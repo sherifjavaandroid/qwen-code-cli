@@ -32,9 +32,17 @@ Do these 3 steps and you'll have a **free** coding agent (`qwen` and/or `codex`)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/sherifjavaandroid/qwen-code-cli)
 
 Click the button → sign in to Vercel → **Deploy**. When it finishes, copy your
-URL (looks like `https://your-name.vercel.app`).
+**production** URL (looks like `https://your-name.vercel.app`).
 
 <sub>Prefer the terminal? `npm i -g vercel && vercel --prod` inside the cloned repo.</sub>
+
+> ⚠️ **If you see a Vercel login page when opening your URL** (or your tool gets
+> a `401`/redirect to `vercel.com/sso-api`), your deployment is protected. Fix it:
+> **Vercel → your project → Settings → Deployment Protection → Vercel
+> Authentication → set to _Disabled_ → Save.** Also always use the **production**
+> URL (`your-name.vercel.app`), not the long per-deployment preview URLs
+> (`...-git-...` or hash URLs) — those stay protected. Then re-test:
+> `curl https://your-name.vercel.app/v1/models` should return JSON, not HTML.
 
 ### Step 2 — Get your free token
 
@@ -121,7 +129,14 @@ More detail: [Qwen Code guide](docs/qwen-code-setup.md) · [Codex guide](docs/co
 ### الخطوة 1 — انشر البروكسي الخاص بك (بضغطة واحدة)
 
 اضغط زر **Deploy with Vercel** بالأعلى → سجّل الدخول في Vercel → اضغط **Deploy**.
-بعد الانتهاء انسخ الرابط (يكون بالشكل `https://your-name.vercel.app`).
+بعد الانتهاء انسخ رابط **الإنتاج (production)** (يكون بالشكل `https://your-name.vercel.app`).
+
+> ⚠️ **إذا ظهرت لك صفحة تسجيل دخول Vercel عند فتح الرابط** (أو حصلت أداتك على
+> `401` أو تحويل إلى `vercel.com/sso-api`)، فإن النشر محمي. الحل:
+> **Vercel ← مشروعك ← Settings ← Deployment Protection ← Vercel Authentication
+> ← اجعلها _Disabled_ ← Save.** واستخدم دائمًا رابط **الإنتاج**
+> (`your-name.vercel.app`) وليس روابط المعاينة الطويلة. للتأكد:
+> `curl https://your-name.vercel.app/v1/models` يجب أن يُرجع JSON وليس HTML.
 
 ### الخطوة 2 — احصل على التوكن المجاني
 
