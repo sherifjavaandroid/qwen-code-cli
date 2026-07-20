@@ -1,0 +1,8 @@
+# OPTIONAL: use this only if you want Qwen as an opt-in profile instead of the
+# default. Copy to  ~/.codex/qwen.config.toml  and select with:  codex -p qwen
+#
+# In this case your ~/.codex/config.toml should still contain the
+# [model_providers.qwen-free] block, but NOT set model_provider = "qwen-free"
+# at the top (leave your other default in place).
+model_provider = "qwen-free"
+model = "qwen3.7-max"

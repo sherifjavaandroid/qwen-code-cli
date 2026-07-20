@@ -904,9 +904,277 @@ async function createCompletionStream(
   });
 }
 
+// ============================================================
+//  OpenAI Responses API (/v1/responses) — for Codex CLI etc.
+//  Codex only supports the Responses wire API. We translate it
+//  onto the same chat.qwen.ai flow + <tool_call> emulation.
+// ============================================================
+
+/** 提取 Responses 输入内容中的文本（content 可能是字符串或 parts 数组） */
+function extractResponsesText(content: any): string {
+  if (_.isString(content)) return content;
+  if (_.isArray(content)) {
+    return content
+      .filter(
+        (p) =>
+          p &&
+          (p.type === "input_text" ||
+            p.type === "output_text" ||
+            p.type === "text") &&
+          p.text
+      )
+      .map((p) => p.text)
+      .join("\n");
+  }
+  return "";
+}
+
+/** 把 Responses 请求（instructions + input items + tools）拍平成单条提示词 */
+function prepareResponsesPrompt(
+  instructions: any,
+  input: any,
+  tools: any[]
+): string {
+  const parts: string[] = [];
+  if (_.isArray(tools) && tools.length) parts.push(buildToolSystemPrompt(tools));
+  if (instructions && _.isString(instructions))
+    parts.push(`System: ${instructions}`);
+
+  const items = _.isString(input)
+    ? [{ type: "message", role: "user", content: input }]
+    : _.isArray(input)
+    ? input
+    : [];
+
+  const cap = (r: string) =>
+    r === "system" ? "System" : r === "assistant" ? "Assistant" : r === "tool" ? "Tool" : "User";
+
+  for (const item of items) {
+    if (!item) continue;
+    const type = item.type || "message";
+    if (type === "message") {
+      const text = extractResponsesText(item.content);
+      if (text) parts.push(`${cap(item.role || "user")}: ${text}`);
+    } else if (type === "function_call") {
+      let args: any = item.arguments;
+      try {
+        args = JSON.parse(args);
+      } catch {
+        /* keep raw */
+      }
+      parts.push(
+        `Assistant: <tool_call>\n${JSON.stringify({
+          name: item.name,
+          arguments: args ?? {},
+        })}\n</tool_call>`
+      );
+    } else if (type === "function_call_output") {
+      const out = _.isString(item.output)
+        ? item.output
+        : JSON.stringify(item.output);
+      parts.push(`Tool result:\n<tool_response>\n${out}\n</tool_response>`);
+    }
+    // reasoning / other item types are ignored
+  }
+
+  parts.push("Assistant:");
+  return parts.join("\n\n");
+}
+
+/** 执行一次 chat.qwen.ai 往返，返回完整文本 */
+async function fetchQwenAnswer(
+  model: string,
+  content: string,
+  token: string,
+  refConvId?: string
+): Promise<{ responseContent: string; responseId: string }> {
+  const chatType = SEARCH_MODELS.includes(model) ? "search" : "t2t";
+  const chatId = refConvId || (await createConversation(model, token, chatType));
+  const result = await sendCompletionRequest(model, chatId, content, token);
+  if (result.headers["content-type"]?.includes("application/json")) {
+    const errorData = await new Promise<string>((resolve) => {
+      let data = "";
+      result.data.on("data", (chunk) => (data += chunk.toString()));
+      result.data.on("end", () => resolve(data));
+    });
+    throw new APIException(EX.API_REQUEST_FAILED, `请求失败: ${errorData}`);
+  }
+  const { content: responseContent, responseId } = await receiveStream(
+    model,
+    result.data
+  );
+  if (!refConvId) removeConversation(chatId, token).catch(() => {});
+  return { responseContent, responseId: responseId || chatId };
+}
+
+/** 构建 Responses 的 output 项数组 */
+function buildResponsesOutput(textContent: string, toolCalls: any[]): any[] {
+  const output: any[] = [];
+  if (textContent) {
+    output.push({
+      type: "message",
+      id: `msg_${util.uuid(false).slice(0, 24)}`,
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: textContent, annotations: [] }],
+    });
+  }
+  for (const tc of toolCalls) {
+    output.push({
+      type: "function_call",
+      id: `fc_${util.uuid(false).slice(0, 24)}`,
+      call_id: tc.id,
+      name: tc.function.name,
+      arguments: tc.function.arguments,
+      status: "completed",
+    });
+  }
+  return output;
+}
+
+/** 非流式 Responses */
+async function createResponses(model: string, body: any, token: string) {
+  const { instructions, input, tools, tool_choice } = body;
+  const content = prepareResponsesPrompt(instructions, input, tools);
+  const { responseContent } = await fetchQwenAnswer(
+    model,
+    content,
+    token,
+    body.previous_response_id
+  );
+  const useTools =
+    _.isArray(tools) && tools.length > 0 && tool_choice !== "none";
+  let textContent = responseContent;
+  let toolCalls: any[] = [];
+  if (useTools) {
+    const parsed = parseToolCalls(responseContent);
+    textContent = parsed.content;
+    toolCalls = parsed.toolCalls;
+  }
+  const output = buildResponsesOutput(textContent, toolCalls);
+  return {
+    id: `resp_${util.uuid(false).slice(0, 24)}`,
+    object: "response",
+    created_at: util.unixTimestamp(),
+    status: "completed",
+    model,
+    output,
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  };
+}
+
+/** 流式 Responses（缓冲后按 SSE 事件序列回放） */
+async function createResponsesStream(model: string, body: any, token: string) {
+  const { instructions, input, tools, tool_choice } = body;
+  const content = prepareResponsesPrompt(instructions, input, tools);
+  const { responseContent } = await fetchQwenAnswer(
+    model,
+    content,
+    token,
+    body.previous_response_id
+  );
+  const useTools =
+    _.isArray(tools) && tools.length > 0 && tool_choice !== "none";
+  let textContent = responseContent;
+  let toolCalls: any[] = [];
+  if (useTools) {
+    const parsed = parseToolCalls(responseContent);
+    textContent = parsed.content;
+    toolCalls = parsed.toolCalls;
+  }
+  const output = buildResponsesOutput(textContent, toolCalls);
+  const respId = `resp_${util.uuid(false).slice(0, 24)}`;
+
+  const ts = new PassThrough();
+  let seq = 0;
+  const emit = (type: string, obj: any) =>
+    ts.write(
+      `event: ${type}\ndata: ${JSON.stringify({
+        type,
+        sequence_number: seq++,
+        ...obj,
+      })}\n\n`
+    );
+  const resp = (status: string, out: any[]) => ({
+    id: respId,
+    object: "response",
+    created_at: util.unixTimestamp(),
+    status,
+    model,
+    output: out,
+    usage:
+      status === "completed"
+        ? { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+        : null,
+  });
+
+  emit("response.created", { response: resp("in_progress", []) });
+  emit("response.in_progress", { response: resp("in_progress", []) });
+
+  let idx = 0;
+  for (const item of output) {
+    if (item.type === "message") {
+      const text = item.content[0].text;
+      emit("response.output_item.added", {
+        output_index: idx,
+        item: { ...item, status: "in_progress", content: [] },
+      });
+      emit("response.content_part.added", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] },
+      });
+      emit("response.output_text.delta", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        delta: text,
+      });
+      emit("response.output_text.done", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        text,
+      });
+      emit("response.content_part.done", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        part: item.content[0],
+      });
+      emit("response.output_item.done", { output_index: idx, item });
+    } else if (item.type === "function_call") {
+      emit("response.output_item.added", {
+        output_index: idx,
+        item: { ...item, status: "in_progress", arguments: "" },
+      });
+      emit("response.function_call_arguments.delta", {
+        item_id: item.id,
+        output_index: idx,
+        delta: item.arguments,
+      });
+      emit("response.function_call_arguments.done", {
+        item_id: item.id,
+        output_index: idx,
+        arguments: item.arguments,
+      });
+      emit("response.output_item.done", { output_index: idx, item });
+    }
+    idx++;
+  }
+
+  emit("response.completed", { response: resp("completed", output) });
+  ts.write("data: [DONE]\n\n");
+  ts.end();
+  return ts;
+}
+
 export default {
   createCompletion,
   createCompletionStream,
+  createResponses,
+  createResponsesStream,
   tokenSplit,
   getTokenLiveStatus,
 };

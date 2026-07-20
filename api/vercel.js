@@ -600,7 +600,7 @@ process.setMaxListeners(Infinity);
 process.on("uncaughtException", (err, origin) => {
   logger_default.error(`An unhandled error occurred: ${origin}`, err);
 });
-process.on("unhandledRejection", (_15, promise) => {
+process.on("unhandledRejection", (_16, promise) => {
   promise.catch((err) => logger_default.error("An unhandled rejection occurred:", err));
 });
 process.on("warning", (warning) => logger_default.warn("System warning: ", warning));
@@ -1661,9 +1661,228 @@ async function createCompletionStream(model, messages, token, refConvId, retryCo
     throw err;
   });
 }
+function extractResponsesText(content) {
+  if (_12.isString(content)) return content;
+  if (_12.isArray(content)) {
+    return content.filter(
+      (p) => p && (p.type === "input_text" || p.type === "output_text" || p.type === "text") && p.text
+    ).map((p) => p.text).join("\n");
+  }
+  return "";
+}
+function prepareResponsesPrompt(instructions, input, tools) {
+  const parts = [];
+  if (_12.isArray(tools) && tools.length) parts.push(buildToolSystemPrompt(tools));
+  if (instructions && _12.isString(instructions))
+    parts.push(`System: ${instructions}`);
+  const items = _12.isString(input) ? [{ type: "message", role: "user", content: input }] : _12.isArray(input) ? input : [];
+  const cap = (r) => r === "system" ? "System" : r === "assistant" ? "Assistant" : r === "tool" ? "Tool" : "User";
+  for (const item of items) {
+    if (!item) continue;
+    const type = item.type || "message";
+    if (type === "message") {
+      const text = extractResponsesText(item.content);
+      if (text) parts.push(`${cap(item.role || "user")}: ${text}`);
+    } else if (type === "function_call") {
+      let args = item.arguments;
+      try {
+        args = JSON.parse(args);
+      } catch {
+      }
+      parts.push(
+        `Assistant: <tool_call>
+${JSON.stringify({
+          name: item.name,
+          arguments: args ?? {}
+        })}
+</tool_call>`
+      );
+    } else if (type === "function_call_output") {
+      const out = _12.isString(item.output) ? item.output : JSON.stringify(item.output);
+      parts.push(`Tool result:
+<tool_response>
+${out}
+</tool_response>`);
+    }
+  }
+  parts.push("Assistant:");
+  return parts.join("\n\n");
+}
+async function fetchQwenAnswer(model, content, token, refConvId) {
+  const chatType = SEARCH_MODELS.includes(model) ? "search" : "t2t";
+  const chatId = refConvId || await createConversation(model, token, chatType);
+  const result = await sendCompletionRequest(model, chatId, content, token);
+  if (result.headers["content-type"]?.includes("application/json")) {
+    const errorData = await new Promise((resolve) => {
+      let data = "";
+      result.data.on("data", (chunk) => data += chunk.toString());
+      result.data.on("end", () => resolve(data));
+    });
+    throw new APIException(exceptions_default.API_REQUEST_FAILED, `\u8BF7\u6C42\u5931\u8D25: ${errorData}`);
+  }
+  const { content: responseContent, responseId } = await receiveStream(
+    model,
+    result.data
+  );
+  if (!refConvId) removeConversation(chatId, token).catch(() => {
+  });
+  return { responseContent, responseId: responseId || chatId };
+}
+function buildResponsesOutput(textContent, toolCalls) {
+  const output = [];
+  if (textContent) {
+    output.push({
+      type: "message",
+      id: `msg_${util_default.uuid(false).slice(0, 24)}`,
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: textContent, annotations: [] }]
+    });
+  }
+  for (const tc of toolCalls) {
+    output.push({
+      type: "function_call",
+      id: `fc_${util_default.uuid(false).slice(0, 24)}`,
+      call_id: tc.id,
+      name: tc.function.name,
+      arguments: tc.function.arguments,
+      status: "completed"
+    });
+  }
+  return output;
+}
+async function createResponses(model, body, token) {
+  const { instructions, input, tools, tool_choice } = body;
+  const content = prepareResponsesPrompt(instructions, input, tools);
+  const { responseContent } = await fetchQwenAnswer(
+    model,
+    content,
+    token,
+    body.previous_response_id
+  );
+  const useTools = _12.isArray(tools) && tools.length > 0 && tool_choice !== "none";
+  let textContent = responseContent;
+  let toolCalls = [];
+  if (useTools) {
+    const parsed = parseToolCalls(responseContent);
+    textContent = parsed.content;
+    toolCalls = parsed.toolCalls;
+  }
+  const output = buildResponsesOutput(textContent, toolCalls);
+  return {
+    id: `resp_${util_default.uuid(false).slice(0, 24)}`,
+    object: "response",
+    created_at: util_default.unixTimestamp(),
+    status: "completed",
+    model,
+    output,
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+  };
+}
+async function createResponsesStream(model, body, token) {
+  const { instructions, input, tools, tool_choice } = body;
+  const content = prepareResponsesPrompt(instructions, input, tools);
+  const { responseContent } = await fetchQwenAnswer(
+    model,
+    content,
+    token,
+    body.previous_response_id
+  );
+  const useTools = _12.isArray(tools) && tools.length > 0 && tool_choice !== "none";
+  let textContent = responseContent;
+  let toolCalls = [];
+  if (useTools) {
+    const parsed = parseToolCalls(responseContent);
+    textContent = parsed.content;
+    toolCalls = parsed.toolCalls;
+  }
+  const output = buildResponsesOutput(textContent, toolCalls);
+  const respId = `resp_${util_default.uuid(false).slice(0, 24)}`;
+  const ts = new PassThrough();
+  let seq = 0;
+  const emit = (type, obj) => ts.write(
+    `event: ${type}
+data: ${JSON.stringify({
+      type,
+      sequence_number: seq++,
+      ...obj
+    })}
+
+`
+  );
+  const resp = (status, out) => ({
+    id: respId,
+    object: "response",
+    created_at: util_default.unixTimestamp(),
+    status,
+    model,
+    output: out,
+    usage: status === "completed" ? { input_tokens: 1, output_tokens: 1, total_tokens: 2 } : null
+  });
+  emit("response.created", { response: resp("in_progress", []) });
+  emit("response.in_progress", { response: resp("in_progress", []) });
+  let idx = 0;
+  for (const item of output) {
+    if (item.type === "message") {
+      const text = item.content[0].text;
+      emit("response.output_item.added", {
+        output_index: idx,
+        item: { ...item, status: "in_progress", content: [] }
+      });
+      emit("response.content_part.added", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] }
+      });
+      emit("response.output_text.delta", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        delta: text
+      });
+      emit("response.output_text.done", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        text
+      });
+      emit("response.content_part.done", {
+        item_id: item.id,
+        output_index: idx,
+        content_index: 0,
+        part: item.content[0]
+      });
+      emit("response.output_item.done", { output_index: idx, item });
+    } else if (item.type === "function_call") {
+      emit("response.output_item.added", {
+        output_index: idx,
+        item: { ...item, status: "in_progress", arguments: "" }
+      });
+      emit("response.function_call_arguments.delta", {
+        item_id: item.id,
+        output_index: idx,
+        delta: item.arguments
+      });
+      emit("response.function_call_arguments.done", {
+        item_id: item.id,
+        output_index: idx,
+        arguments: item.arguments
+      });
+      emit("response.output_item.done", { output_index: idx, item });
+    }
+    idx++;
+  }
+  emit("response.completed", { response: resp("completed", output) });
+  ts.write("data: [DONE]\n\n");
+  ts.end();
+  return ts;
+}
 var chat_default = {
   createCompletion,
   createCompletionStream,
+  createResponses,
+  createResponsesStream,
   tokenSplit,
   getTokenLiveStatus
 };
@@ -1694,6 +1913,33 @@ var chat_default2 = {
   }
 };
 
+// src/api/routes/responses.ts
+import _14 from "lodash";
+import process3 from "process";
+var QWEN_AUTHORIZATION2 = process3.env.QWEN_AUTHORIZATION;
+var responses_default = {
+  prefix: "/v1",
+  post: {
+    "/responses": async (request) => {
+      request.validate("headers.authorization", _14.isString);
+      if (QWEN_AUTHORIZATION2) {
+        request.headers.authorization = "Bearer " + QWEN_AUTHORIZATION2;
+      }
+      const tokens = chat_default.tokenSplit(request.headers.authorization);
+      const token = _14.sample(tokens);
+      let { model, stream } = request.body;
+      model = (model || "qwen3.7-max").toLowerCase();
+      if (stream) {
+        const responseStream = await chat_default.createResponsesStream(model, request.body, token);
+        return new Response(responseStream, {
+          type: "text/event-stream"
+        });
+      } else
+        return await chat_default.createResponses(model, request.body, token);
+    }
+  }
+};
+
 // src/api/routes/ping.ts
 var ping_default = {
   prefix: "/ping",
@@ -1703,12 +1949,12 @@ var ping_default = {
 };
 
 // src/api/routes/token.ts
-import _14 from "lodash";
+import _15 from "lodash";
 var token_default = {
   prefix: "/token",
   post: {
     "/check": async (request) => {
-      request.validate("body.token", _14.isString);
+      request.validate("body.token", _15.isString);
       const live = await chat_default.getTokenLiveStatus(request.body.token);
       return {
         live
@@ -1831,6 +2077,7 @@ var routes_default = [
     }
   },
   chat_default2,
+  responses_default,
   ping_default,
   token_default,
   models_default

@@ -1,0 +1,17 @@
+# Copy to  C:\Users\<you>\.codex\config.toml  (Windows)
+#      or  ~/.codex/config.toml               (macOS / Linux)
+#
+# Makes the free Qwen proxy the DEFAULT provider for Codex.
+# Set the QWEN_TOKEN env var to your chat.qwen.ai token (see README).
+
+model_provider = "qwen-free"
+model = "qwen3.7-max"
+model_context_window = 262144
+model_max_output_tokens = 32768
+
+[model_providers.qwen-free]
+name = "Qwen Free"
+base_url = "https://your-proxy.vercel.app/v1"
+env_key = "QWEN_TOKEN"
+wire_api = "responses"
+supports_websockets = false

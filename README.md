@@ -11,6 +11,7 @@ Qwen Code / Cursor / Cline  ──►  this proxy (/v1/chat/completions)  ──
 ```
 
 - ✅ OpenAI-compatible: `POST /v1/chat/completions`, `GET /v1/models`
+- ✅ **Responses API** (`POST /v1/responses`) — so OpenAI **Codex** works too
 - ✅ Streaming (SSE)
 - ✅ **Tool / function calling** — emulated so agents (write files, run shell, git) work
 - ✅ Many Qwen models exposed (`qwen3.7-max`, `qwen3.6-plus`, `qwen3-vl-plus`, …)
@@ -91,6 +92,46 @@ memory) via MCP, follow the [setup doc](docs/qwen-code-setup.md#3-optional-add-m
 
 Works with any OpenAI-compatible client too — Cursor, Cline, Continue, the
 OpenAI SDK — just point the base URL at your proxy and use your token.
+
+---
+
+## Use it with OpenAI Codex (free agent)
+
+Codex 0.144+ only speaks OpenAI's **Responses API**, which this proxy implements
+at `POST /v1/responses`. Full guide: **[docs/codex-setup.md](docs/codex-setup.md)**.
+Short version:
+
+```bash
+npm i -g @openai/codex
+```
+
+Set your token as an env var (persistent):
+```powershell
+# Windows PowerShell
+[Environment]::SetEnvironmentVariable("QWEN_TOKEN", "<your token>", "User")
+```
+```bash
+# macOS / Linux (add to ~/.zshrc or ~/.bashrc)
+export QWEN_TOKEN="<your token>"
+```
+
+`~/.codex/config.toml` (see [`examples/codex/config.toml`](examples/codex/config.toml)):
+```toml
+model_provider = "qwen-free"
+model = "qwen3.7-max"
+model_context_window = 262144
+model_max_output_tokens = 32768
+
+[model_providers.qwen-free]
+name = "Qwen Free"
+base_url = "https://your-proxy.vercel.app/v1"
+env_key = "QWEN_TOKEN"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Then run `codex` (or `codex exec "your task"`). It writes files and runs
+commands for free through the proxy.
 
 ---
 
