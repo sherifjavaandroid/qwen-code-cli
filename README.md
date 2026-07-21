@@ -272,6 +272,69 @@ commands for free through the proxy.
 
 ---
 
+## Other free providers: DeepSeek & Kimi
+
+The same gateway pattern works for other free web LLMs. Sibling proxies (same
+architecture: OpenAI-compatible, `/v1/responses`, tool-calling emulation):
+
+| Provider | Proxy repo | Models | Token source (F12 → Local Storage) |
+|---|---|---|---|
+| **DeepSeek** | [`sherifjavaandroid/ai-api`](https://github.com/sherifjavaandroid/ai-api) | `deepseek-chat`, `deepseek-reasoner` | `chat.deepseek.com` → `userToken` → its `value` |
+| **Kimi** | [`sherifjavaandroid/kimi-free-api`](https://github.com/sherifjavaandroid/kimi-free-api) | `kimi` | `kimi.moonshot.cn` / `kimi.com` → `refresh_token` |
+
+### Deploy one
+Clone the repo → `vercel --prod` (or import on vercel.com/new) → copy your
+production URL. Disable Vercel Authentication if you hit the login page (see the
+⚠️ note in Step 1). No env vars needed at deploy time.
+
+### Add it to Codex (multi-provider)
+Define each as another provider in `~/.codex/config.toml` and switch by editing
+the top two lines. Tokens come from env vars so nothing is stored in the file:
+
+```toml
+# switch active provider here:
+model_provider = "deepseek-free"   # or "kimi-free" / "qwen-free"
+model = "deepseek-chat"            # or "kimi" / "qwen3.7-max"
+model_context_window = 131072
+model_max_output_tokens = 32768
+
+[model_providers.qwen-free]
+name = "Qwen Free"
+base_url = "https://YOUR-qwen.vercel.app/v1"
+env_key = "QWEN_TOKEN"
+wire_api = "responses"
+supports_websockets = false
+
+[model_providers.deepseek-free]
+name = "DeepSeek Free"
+base_url = "https://YOUR-deepseek.vercel.app/v1"
+env_key = "DEEPSEEK_TOKEN"
+wire_api = "responses"
+supports_websockets = false
+
+[model_providers.kimi-free]
+name = "Kimi Free"
+base_url = "https://YOUR-kimi.vercel.app/v1"
+env_key = "KIMI_TOKEN"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Set the env vars once (persistent), e.g. on Windows:
+```powershell
+[Environment]::SetEnvironmentVariable("DEEPSEEK_TOKEN", "<your token>", "User")
+[Environment]::SetEnvironmentVariable("KIMI_TOKEN",     "<your token>", "User")
+```
+
+For **Qwen Code / Cursor / Cline** (Chat Completions clients) these providers
+work too — just point the base URL at the matching proxy and use its token.
+
+> DeepSeek's proxy solves a proof-of-work anti-bot challenge (its `sha3` WASM is
+> embedded so it runs in serverless). All providers share the same free-tier
+> limits and tool-emulation caveats noted below.
+
+---
+
 ## Test the proxy
 
 ```bash
