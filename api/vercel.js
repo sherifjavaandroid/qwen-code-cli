@@ -2004,19 +2004,23 @@ function safeParseToolJson2(raw) {
   }
 }
 function parseToolCalls2(text) {
+  let t = text;
+  const opens = (t.match(/<tool_call>/g) || []).length;
+  const closes = (t.match(/<\/tool_call>/g) || []).length;
+  if (opens > closes) t += "</tool_call>".repeat(opens - closes);
   const toolCalls = [];
   const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let m;
-  while ((m = regex.exec(text)) !== null) {
+  while ((m = regex.exec(t)) !== null) {
     const p = safeParseToolJson2(m[1]);
     if (p && p.name) {
       const input = _15.isString(p.arguments) ? safeParseToolJson2(p.arguments) || {} : p.arguments ?? {};
       toolCalls.push({ id: `toolu_${genId()}`, name: p.name, input });
     }
   }
-  let content = text.replace(regex, "").trim();
+  let content = t.replace(regex, "").trim();
   if (!toolCalls.length) {
-    const bare = safeParseToolJson2(text);
+    const bare = safeParseToolJson2(t);
     if (bare && bare.name && bare.arguments !== void 0) {
       toolCalls.push({ id: `toolu_${genId()}`, name: bare.name, input: bare.arguments ?? {} });
       content = "";
