@@ -600,7 +600,7 @@ process.setMaxListeners(Infinity);
 process.on("uncaughtException", (err, origin) => {
   logger_default.error(`An unhandled error occurred: ${origin}`, err);
 });
-process.on("unhandledRejection", (_16, promise) => {
+process.on("unhandledRejection", (_18, promise) => {
   promise.catch((err) => logger_default.error("An unhandled rejection occurred:", err));
 });
 process.on("warning", (warning) => logger_default.warn("System warning: ", warning));
@@ -1678,13 +1678,13 @@ function prepareResponsesPrompt(instructions, input, tools) {
   if (instructions && _12.isString(instructions))
     parts.push(`System: ${instructions}`);
   const items = _12.isString(input) ? [{ type: "message", role: "user", content: input }] : _12.isArray(input) ? input : [];
-  const cap = (r) => r === "system" ? "System" : r === "assistant" ? "Assistant" : r === "tool" ? "Tool" : "User";
+  const cap2 = (r) => r === "system" ? "System" : r === "assistant" ? "Assistant" : r === "tool" ? "Tool" : "User";
   for (const item of items) {
     if (!item) continue;
     const type = item.type || "message";
     if (type === "message") {
       const text = extractResponsesText(item.content);
-      if (text) parts.push(`${cap(item.role || "user")}: ${text}`);
+      if (text) parts.push(`${cap2(item.role || "user")}: ${text}`);
     } else if (type === "function_call") {
       let args = item.arguments;
       try {
@@ -1961,6 +1961,240 @@ var responses_default = {
   }
 };
 
+// src/api/routes/messages.ts
+import _16 from "lodash";
+import process4 from "process";
+
+// src/api/controllers/anthropic.ts
+import { PassThrough as PassThrough2 } from "stream";
+import _15 from "lodash";
+var genId = () => util_default.uuid(false).slice(0, 24);
+async function getText(model, prompt, token) {
+  const r = await chat_default.createCompletion(model, [{ role: "user", content: prompt }], token);
+  return r?.choices?.[0]?.message?.content || "";
+}
+function buildToolSystemPrompt2(tools) {
+  return [
+    "# Tool Calling",
+    "",
+    "You have the tools below. To call a tool, reply with one or more blocks EXACTLY:",
+    "",
+    "<tool_call>",
+    '{"name": "<tool_name>", "arguments": {<json-arguments matching input_schema>}}',
+    "</tool_call>",
+    "",
+    "Rules: output ONLY the <tool_call> block(s) when calling tools, no prose. Tool results",
+    "come back inside <tool_response> blocks. When done, reply in plain text with no block.",
+    "",
+    "Available tools (JSON):",
+    "<tools>",
+    JSON.stringify(tools, null, 2),
+    "</tools>"
+  ].join("\n");
+}
+function safeParseToolJson2(raw) {
+  if (!raw) return null;
+  let s = raw.trim();
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) s = fence[1].trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+function parseToolCalls2(text) {
+  const toolCalls = [];
+  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+  let m;
+  while ((m = regex.exec(text)) !== null) {
+    const p = safeParseToolJson2(m[1]);
+    if (p && p.name) {
+      const input = _15.isString(p.arguments) ? safeParseToolJson2(p.arguments) || {} : p.arguments ?? {};
+      toolCalls.push({ id: `toolu_${genId()}`, name: p.name, input });
+    }
+  }
+  let content = text.replace(regex, "").trim();
+  if (!toolCalls.length) {
+    const bare = safeParseToolJson2(text);
+    if (bare && bare.name && bare.arguments !== void 0) {
+      toolCalls.push({ id: `toolu_${genId()}`, name: bare.name, input: bare.arguments ?? {} });
+      content = "";
+    }
+  }
+  return { content, toolCalls };
+}
+function extractText(content) {
+  if (_15.isString(content)) return content;
+  if (_15.isArray(content)) {
+    return content.filter((b) => b && b.type === "text" && _15.isString(b.text)).map((b) => b.text).join("\n");
+  }
+  return "";
+}
+var cap = (r) => r === "assistant" ? "Assistant" : "User";
+function anthropicPrepare(system, messages, tools) {
+  const parts = [];
+  if (_15.isArray(tools) && tools.length) parts.push(buildToolSystemPrompt2(tools));
+  const sys = _15.isString(system) ? system : _15.isArray(system) ? extractText(system) : "";
+  if (sys) parts.push(`System: ${sys}`);
+  for (const msg of messages || []) {
+    if (!msg) continue;
+    if (_15.isString(msg.content)) {
+      parts.push(`${cap(msg.role)}: ${msg.content}`);
+      continue;
+    }
+    if (!_15.isArray(msg.content)) continue;
+    const textPieces = [];
+    for (const b of msg.content) {
+      if (!b) continue;
+      if (b.type === "text" && b.text) textPieces.push(b.text);
+      else if (b.type === "tool_use")
+        textPieces.push(`<tool_call>
+${JSON.stringify({ name: b.name, arguments: b.input ?? {} })}
+</tool_call>`);
+      else if (b.type === "tool_result") {
+        const c = _15.isString(b.content) ? b.content : extractText(b.content);
+        textPieces.push(`<tool_response>
+${c}
+</tool_response>`);
+      }
+    }
+    const joined = textPieces.join("\n");
+    if (joined) parts.push(`${cap(msg.role)}: ${joined}`);
+  }
+  parts.push("Assistant:");
+  return parts.join("\n\n");
+}
+function buildContent(text, toolCalls) {
+  const content = [];
+  if (text) content.push({ type: "text", text });
+  for (const tc of toolCalls)
+    content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input ?? {} });
+  return content;
+}
+async function createMessages(model, body, token) {
+  const { system, messages, tools } = body;
+  const useTools = _15.isArray(tools) && tools.length > 0;
+  const prompt = anthropicPrepare(system, messages, tools);
+  const raw = await getText(model, prompt, token);
+  let text = raw, toolCalls = [];
+  if (useTools) {
+    const p = parseToolCalls2(raw);
+    text = p.content;
+    toolCalls = p.toolCalls;
+  }
+  const content = buildContent(text, toolCalls);
+  return {
+    id: `msg_${genId()}`,
+    type: "message",
+    role: "assistant",
+    model,
+    content,
+    stop_reason: toolCalls.length ? "tool_use" : "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 1, output_tokens: 1 }
+  };
+}
+function createMessagesStream(model, body, token) {
+  const { system, messages, tools } = body;
+  const useTools = _15.isArray(tools) && tools.length > 0;
+  const prompt = anthropicPrepare(system, messages, tools);
+  const msgId = `msg_${genId()}`;
+  const ts = new PassThrough2();
+  const send = (event, data) => {
+    try {
+      ts.write(`event: ${event}
+data: ${JSON.stringify(data)}
+
+`);
+    } catch {
+    }
+  };
+  send("message_start", {
+    type: "message_start",
+    message: {
+      id: msgId,
+      type: "message",
+      role: "assistant",
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 0 }
+    }
+  });
+  const heartbeat = setInterval(() => {
+    try {
+      ts.write(`event: ping
+data: {"type":"ping"}
+
+`);
+    } catch {
+    }
+  }, 5e3);
+  (async () => {
+    try {
+      const raw = await getText(model, prompt, token);
+      let text = raw, toolCalls = [];
+      if (useTools) {
+        const p = parseToolCalls2(raw);
+        text = p.content;
+        toolCalls = p.toolCalls;
+      }
+      const content = buildContent(text, toolCalls);
+      let idx = 0;
+      for (const block of content) {
+        if (block.type === "text") {
+          send("content_block_start", { type: "content_block_start", index: idx, content_block: { type: "text", text: "" } });
+          send("content_block_delta", { type: "content_block_delta", index: idx, delta: { type: "text_delta", text: block.text } });
+          send("content_block_stop", { type: "content_block_stop", index: idx });
+        } else if (block.type === "tool_use") {
+          send("content_block_start", { type: "content_block_start", index: idx, content_block: { type: "tool_use", id: block.id, name: block.name, input: {} } });
+          send("content_block_delta", { type: "content_block_delta", index: idx, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) } });
+          send("content_block_stop", { type: "content_block_stop", index: idx });
+        }
+        idx++;
+      }
+      send("message_delta", { type: "message_delta", delta: { stop_reason: toolCalls.length ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+      send("message_stop", { type: "message_stop" });
+    } catch (err) {
+      logger_default.error("messages stream error:", err?.message || err);
+      send("error", { type: "error", error: { type: "api_error", message: String(err?.message || err) } });
+    } finally {
+      clearInterval(heartbeat);
+      ts.end();
+    }
+  })();
+  return ts;
+}
+var anthropic_default = { createMessages, createMessagesStream, tokenSplit: chat_default.tokenSplit };
+
+// src/api/routes/messages.ts
+var QWEN_AUTHORIZATION3 = process4.env.QWEN_AUTHORIZATION;
+var DEFAULT_MODEL = process4.env.QWEN_MESSAGES_MODEL || "qwen3-coder-plus";
+var messages_default = {
+  prefix: "/v1",
+  post: {
+    "/messages": async (request) => {
+      request.validate("body.messages", _16.isArray);
+      let auth = request.headers["authorization"];
+      if (!auth && request.headers["x-api-key"])
+        auth = "Bearer " + request.headers["x-api-key"];
+      if (QWEN_AUTHORIZATION3) auth = "Bearer " + QWEN_AUTHORIZATION3;
+      const tokens = anthropic_default.tokenSplit(auth || "");
+      const token = _16.sample(tokens);
+      let { model, stream } = request.body;
+      model = (model || "").toLowerCase();
+      if (!model || model.startsWith("claude")) model = DEFAULT_MODEL;
+      if (stream) {
+        const s = await anthropic_default.createMessagesStream(model, request.body, token);
+        return new Response(s, { type: "text/event-stream" });
+      }
+      return await anthropic_default.createMessages(model, request.body, token);
+    }
+  }
+};
+
 // src/api/routes/ping.ts
 var ping_default = {
   prefix: "/ping",
@@ -1970,12 +2204,12 @@ var ping_default = {
 };
 
 // src/api/routes/token.ts
-import _15 from "lodash";
+import _17 from "lodash";
 var token_default = {
   prefix: "/token",
   post: {
     "/check": async (request) => {
-      request.validate("body.token", _15.isString);
+      request.validate("body.token", _17.isString);
       const live = await chat_default.getTokenLiveStatus(request.body.token);
       return {
         live
@@ -2099,6 +2333,7 @@ var routes_default = [
   },
   chat_default2,
   responses_default,
+  messages_default,
   ping_default,
   token_default,
   models_default
