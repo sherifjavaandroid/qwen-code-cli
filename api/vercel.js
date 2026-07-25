@@ -1020,6 +1020,8 @@ var MODEL_MAP = {
   "qwen3.7-max": "qwen3.7-max",
   "qwen3.8-max-preview": "qwen3.8-max-preview",
   "qwen3-max": "qwen3-max",
+  "qwen3-coder": "qwen3-coder-plus",
+  "qwen3-coder-plus": "qwen3-coder-plus",
   "qwen3-vl-plus": "qwen3-vl-plus",
   "qwen3-vl-flash": "qwen3-vl-flash",
   "qwen3-plus": "qwen3.5-plus",
@@ -1247,7 +1249,7 @@ function buildStreamFromCompletion(completion) {
   return transStream;
 }
 function resolveModel(model) {
-  return MODEL_MAP[model] || "qwen3.5-plus";
+  return MODEL_MAP[model] || model || "qwen3.5-plus";
 }
 function isGuestMode(token) {
   return !token || token === "guest" || token === "none";

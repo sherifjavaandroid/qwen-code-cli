@@ -49,6 +49,8 @@ const MODEL_MAP = {
   "qwen3.7-max": "qwen3.7-max",
   "qwen3.8-max-preview": "qwen3.8-max-preview",
   "qwen3-max": "qwen3-max",
+  "qwen3-coder": "qwen3-coder-plus",
+  "qwen3-coder-plus": "qwen3-coder-plus",
   "qwen3-vl-plus": "qwen3-vl-plus",
   "qwen3-vl-flash": "qwen3-vl-flash",
   "qwen3-plus": "qwen3.5-plus",
@@ -353,7 +355,9 @@ function buildStreamFromCompletion(completion: any): PassThrough {
  * 确定实际使用的Qwen模型ID
  */
 function resolveModel(model: string): string {
-  return MODEL_MAP[model] || "qwen3.5-plus";
+  // Mapped alias first; otherwise pass the id through to chat.qwen.ai as-is
+  // (so any valid Qwen model id works without editing this map).
+  return MODEL_MAP[model] || model || "qwen3.5-plus";
 }
 
 /**
