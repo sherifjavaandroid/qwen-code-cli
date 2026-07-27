@@ -190,14 +190,48 @@ function buildToolSystemPrompt(tools: any[]): string {
     "Strict rules:",
     "- When calling tools, output ONLY the <tool_call> block(s). Do NOT add any prose before or after them.",
     '- "arguments" MUST be a valid JSON object that matches the tool\'s parameter schema.',
+    "  Respect the declared types exactly — if a parameter is a string, send a string, not an array.",
     "- To call several tools at once, emit several <tool_call> blocks back to back.",
     "- Tool results are returned to you inside <tool_response> blocks. Use them to continue.",
+    "- ONLY the tools in the <tools> list below exist. Other text in this prompt may tell you",
+    "  to use a tool that is NOT listed (clients often ship stale instructions naming, for",
+    "  example, `apply_patch`). If a name is not in the list, that tool does not exist here and",
+    "  calling it does nothing. Achieve the same result with a listed tool instead — to create",
+    "  or edit a file when only a shell tool is listed, write it with that shell tool.",
+    "- Keep going until the task is actually done. After planning, or after any tool result,",
+    "  emit the NEXT tool call rather than stopping — a plan alone changes nothing. Only reply",
+    "  in plain text once the work is genuinely complete.",
+    "- NEVER claim you created or modified a file unless a <tool_response> confirms it.",
     "- When the task is finished and you are giving the final answer to the user, reply in plain text with NO <tool_call> block.",
     "",
     "Available tools (JSON Schema):",
     "<tools>",
     toolsJson,
     "</tools>",
+  ].join("\n");
+}
+
+/**
+ * 紧贴模型回答之前的提醒：工具列表可能落在很长的 system 指令之前，
+ * 靠就近提醒来保证协议和可用工具名不被忽略。
+ *
+ * Recency reminder placed immediately before the model's turn. Client system
+ * prompts can be tens of thousands of characters, which buries the tool list and
+ * lets stale client guidance (e.g. "use apply_patch") win — this restates the
+ * callable names last so it doesn't.
+ */
+function buildToolReminder(tools: any[]): string {
+  const names = tools
+    .map((t) => (t && t.type === "function" && t.function ? t.function : t))
+    .filter(Boolean)
+    .map((t: any) => t.name)
+    .filter(Boolean);
+  if (!names.length) return "";
+  return [
+    "[Reminder — these are the ONLY callable tools: " + names.join(", ") + ".",
+    "Any other tool name mentioned above does not exist here; use one of these instead.",
+    "If the task is not finished, emit the next <tool_call> now rather than describing what",
+    "you would do. Do not report a file as written unless a <tool_response> confirmed it.]",
   ].join("\n");
 }
 
@@ -326,6 +360,10 @@ function messagesPrepareWithTools(messages: any[], tools: any[]): string {
   }
 
   // 提示模型继续输出
+  if (_.isArray(tools) && tools.length) {
+    const reminder = buildToolReminder(tools);
+    if (reminder) parts.push(reminder);
+  }
   parts.push("Assistant:");
   return parts.join("\n\n");
 }
@@ -958,9 +996,13 @@ function prepareResponsesPrompt(
   tools: any[]
 ): string {
   const parts: string[] = [];
-  if (_.isArray(tools) && tools.length) parts.push(buildToolSystemPrompt(tools));
+  // Client instructions first, tool spec after: Codex sends ~21k chars of system
+  // prompt, and putting the tool list ahead of it buried the list so thoroughly
+  // that the model followed the client's stale `apply_patch` guidance instead of
+  // the tools actually on offer.
   if (instructions && _.isString(instructions))
     parts.push(`System: ${instructions}`);
+  if (_.isArray(tools) && tools.length) parts.push(buildToolSystemPrompt(tools));
 
   const items = _.isString(input)
     ? [{ type: "message", role: "user", content: input }]
@@ -999,6 +1041,10 @@ function prepareResponsesPrompt(
     // reasoning / other item types are ignored
   }
 
+  if (_.isArray(tools) && tools.length) {
+    const reminder = buildToolReminder(tools);
+    if (reminder) parts.push(reminder);
+  }
   parts.push("Assistant:");
   return parts.join("\n\n");
 }
