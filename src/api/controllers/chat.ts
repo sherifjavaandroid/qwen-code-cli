@@ -337,40 +337,73 @@ function repairToolCalls(toolCalls: any[], tools: any[]): any[] {
 }
 
 function parseToolCalls(text: string): { content: string; toolCalls: any[] } {
-  // On long outputs the model routinely omits the closing </tool_call>.
-  // Measured on a 16.7k-char apply_patch: opens=1, closes=0, yet the inner JSON
-  // parsed perfectly — so the only thing wrong was the missing tag. Without
-  // balancing, the regex never matches and the entire block leaks to the client
-  // as prose (or, once stripped, leaves an empty response). anthropic.ts already
-  // did this; this path did not, which is why big file writes failed here.
-  let t = text;
-  const opens = (t.match(/<tool_call>/g) || []).length;
-  const closes = (t.match(/<\/tool_call>/g) || []).length;
-  if (opens > closes) t += "</tool_call>".repeat(opens - closes);
-
+  // Scanned sequentially rather than with a single regex, because on long
+  // outputs the model routinely omits the closing </tool_call> — measured on a
+  // 16.7k-char call: opens=1, closes=0, with inner JSON that parsed fine. A
+  // regex requiring the closer matches nothing and the whole block leaks as
+  // prose.
+  //
+  // Counting tags and appending the missing closers at the end does NOT work:
+  // when some blocks are closed and others aren't (the model sometimes echoes
+  // the prompt's own <tool_call> examples) the closers land in the wrong places
+  // and produce garbage plus trailing </tool_call> litter. Instead each block
+  // ends at its own closer, or — if that is missing — where the next block
+  // starts, or at end of text.
+  const OPEN = "<tool_call>";
+  const CLOSE = "</tool_call>";
   const toolCalls: any[] = [];
-  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(t)) !== null) {
-    const parsed = safeParseToolJson(match[1]);
+  let content = "";
+  let i = 0;
+
+  while (i < text.length) {
+    const start = text.indexOf(OPEN, i);
+    if (start === -1) {
+      content += text.slice(i);
+      break;
+    }
+    content += text.slice(i, start);
+
+    const bodyStart = start + OPEN.length;
+    const close = text.indexOf(CLOSE, bodyStart);
+    const nextOpen = text.indexOf(OPEN, bodyStart);
+
+    let bodyEnd: number;
+    let resume: number;
+    if (close !== -1 && (nextOpen === -1 || close < nextOpen)) {
+      bodyEnd = close;
+      resume = close + CLOSE.length;
+    } else if (nextOpen !== -1) {
+      bodyEnd = nextOpen;
+      resume = nextOpen;
+    } else {
+      bodyEnd = text.length;
+      resume = text.length;
+    }
+
+    const parsed = safeParseToolJson(text.slice(bodyStart, bodyEnd));
     if (parsed && parsed.name) toolCalls.push(toOpenAIToolCall(parsed));
+    i = resume;
   }
-  let content = t.replace(regex, "").trim();
 
   // 回退：模型可能省略了标签，直接输出了一个裸的工具调用 JSON
   if (!toolCalls.length) {
-    const bare = safeParseToolJson(t);
+    const bare = safeParseToolJson(text);
     if (bare && bare.name && bare.arguments !== undefined) {
       toolCalls.push(toOpenAIToolCall(bare));
       content = "";
     }
   }
 
-  // A block that matched but failed to parse would otherwise be stripped into
-  // nothing, and buildResponsesOutput emits no items for empty text + no calls —
-  // i.e. a silent empty response, which reads as the model saying nothing. Give
-  // the original text back instead so the turn is at least diagnosable.
-  if (!toolCalls.length && !content && text.trim()) content = text.trim();
+  // Never let tag litter reach the client — stray closers from echoed
+  // scaffolding showed up verbatim in a real session otherwise.
+  content = content.replace(/<\/?tool_call>/g, "").trim();
+
+  // An unparseable block leaves no calls and no text, and buildResponsesOutput
+  // emits no items for that — a silent empty response. Hand back the original so
+  // the turn is at least diagnosable.
+  if (!toolCalls.length && !content && text.trim()) {
+    content = text.replace(/<\/?tool_call>/g, "").trim();
+  }
 
   return { content, toolCalls };
 }
