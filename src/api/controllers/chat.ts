@@ -202,6 +202,19 @@ function buildToolSystemPrompt(tools: any[]): string {
     "  emit the NEXT tool call rather than stopping — a plan alone changes nothing. Only reply",
     "  in plain text once the work is genuinely complete.",
     "- NEVER claim you created or modified a file unless a <tool_response> confirms it.",
+    "- NEVER paste file contents into your reply as a substitute for writing them. Printing",
+    "  code the user must copy is a failure, not an answer — write the file with a tool.",
+    "- WRITING A MULTI-LINE FILE via a shell tool: use a LITERAL here-doc and nothing else.",
+    "  Putting code inside a double-quoted argument breaks on the first $, backtick, brace or",
+    "  quote — the command errors and you have written nothing:",
+    "    PowerShell:  $c = @'              POSIX:  cat > path <<'EOF'",
+    "                 ...content...                ...content...",
+    "                 '@                           EOF",
+    "                 Set-Content -Path path -Value $c",
+    "  The single-quoted forms (@'…'@ and <<'EOF') are literal — nothing inside needs escaping.",
+    "- Do NOT assume a POSIX shell. `ls -la`, `touch`, `mkdir -p`, `cat`, and brace expansion",
+    "  like {a,b,c} all fail on Windows PowerShell. If a command fails with a shell syntax",
+    "  error, the flavour is wrong — switch flavour instead of retrying the same command.",
     "- When the task is finished and you are giving the final answer to the user, reply in plain text with NO <tool_call> block.",
     "",
     "Available tools (JSON Schema):",
@@ -220,6 +233,47 @@ function buildToolSystemPrompt(tools: any[]): string {
  * lets stale client guidance (e.g. "use apply_patch") win — this restates the
  * callable names last so it doesn't.
  */
+/**
+ * 从历史工具输出里推断客户端 shell。
+ * Codex 不告知平台（其 21k 系统提示里 windows/powershell 出现 0 次），
+ * 但失败的命令回显会暴露：据此提示模型使用正确的 shell 方言。
+ *
+ * Infer the client's shell from earlier tool output. Codex never states the
+ * platform — its 21k-char system prompt mentions windows/powershell zero times —
+ * so the model guesses, defaults to POSIX, and every command fails on Windows.
+ * Failed-command echoes give it away, so once one has come back we can say
+ * which flavour to use.
+ */
+function detectShell(history: string): "powershell" | "posix" | "" {
+  if (!history) return "";
+  if (
+    /FullyQualifiedErrorId|Microsoft\.PowerShell|CategoryInfo|is not recognized as the name of a cmdlet|Get-ChildItem|Set-Content\s*:|A parameter cannot be found|positional parameter cannot be found/i.test(
+      history
+    )
+  )
+    return "powershell";
+  if (/command not found|No such file or directory|\/bin\/(?:ba)?sh|\bsh: \d+:/i.test(history))
+    return "posix";
+  return "";
+}
+
+function buildShellHint(shell: "powershell" | "posix" | ""): string {
+  if (shell === "powershell")
+    return [
+      "[Environment: the shell is Windows PowerShell — earlier tool output proves it.",
+      "POSIX commands (ls -la, touch, mkdir -p, cat, {a,b} brace expansion) WILL fail.",
+      "Use Get-ChildItem / New-Item / Get-Content, and write files with a single-quoted",
+      "here-string:  $c = @'  <newline> ...content... <newline> '@  then",
+      "Set-Content -Path <path> -Value $c   — never put file content in a \"double-quoted\" argument.]",
+    ].join("\n");
+  if (shell === "posix")
+    return [
+      "[Environment: the shell is POSIX (bash/sh) — earlier tool output proves it.",
+      "Write files with a quoted here-doc:  cat > path <<'EOF' ... EOF]",
+    ].join("\n");
+  return "";
+}
+
 function buildToolReminder(tools: any[]): string {
   const names = tools
     .map((t) => (t && t.type === "function" && t.function ? t.function : t))
@@ -1144,6 +1198,10 @@ function prepareResponsesPrompt(
   }
 
   if (_.isArray(tools) && tools.length) {
+    // Shell flavour is inferred from what earlier tool calls echoed back, so the
+    // hint only appears once there is evidence for it.
+    const hint = buildShellHint(detectShell(parts.join("\n")));
+    if (hint) parts.push(hint);
     const reminder = buildToolReminder(tools);
     if (reminder) parts.push(reminder);
   }
@@ -1210,16 +1268,33 @@ function buildResponsesOutput(textContent: string, toolCalls: any[]): any[] {
  * it as the final answer, so the task silently stops — observed as
  * "I'll create the file. Let me implement this properly:" and nothing else.
  */
-function tookNoAction(text: string): boolean {
+function tookNoAction(text: string, codeIsSuspect = false): boolean {
   const low = (text || "").trim().toLowerCase();
   if (!low) return true;
   if (/\b(?:i|we)\s+(?:can(?:no|')?t|could\s?n[o']?t|(?:a[mr]e?|was|were)\s+unable|do\s?n[o']?t\s+have)\b/.test(low))
     return true;
   // Short forward-looking promises. Long replies are usually real answers that
   // merely happen to contain "let me".
-  return (
+  if (
     low.length <= 400 &&
     /(i'?ll |i will |let me |i'?m going to |i am going to |let's |here'?s the plan|implement this)/.test(low)
+  )
+    return true;
+  // Giving up by printing the code. Observed after a few failed shell commands:
+  // ~800 lines of JSX pasted into the reply with nothing written to disk. Only
+  // treated as failure when the user asked for work to be done, so that genuine
+  // "explain this / show me an example" answers still pass through.
+  if (codeIsSuspect && /```|^\s*(?:import |export default |<!doctype |<html)/im.test(text))
+    return true;
+  return false;
+}
+
+/** 最近一条用户消息是否在要求“动手做”，而不是“解释一下” */
+function lastUserWantsAction(prompt: string): boolean {
+  const at = prompt.lastIndexOf("\n\nUser: ");
+  const tail = (at === -1 ? prompt : prompt.slice(at)).toLowerCase();
+  return /\b(create|write|add|make|implement|build|fix|edit|modify|update|rename|delete|remove|run|execute|install|refactor|generate|set ?up|scaffold)\b/.test(
+    tail
   );
 }
 
@@ -1245,9 +1320,10 @@ async function answerWithRetry(
   const first = await fetchQwenAnswer(model, prompt, token);
   if (!useTools) return { textContent: first.responseContent, toolCalls: [] };
 
+  const codeIsSuspect = lastUserWantsAction(prompt);
   let parsed = parseToolCalls(first.responseContent);
   let toolCalls = repairToolCalls(parsed.toolCalls, tools);
-  if (toolCalls.length || !tookNoAction(parsed.content)) {
+  if (toolCalls.length || !tookNoAction(parsed.content, codeIsSuspect)) {
     return { textContent: parsed.content, toolCalls };
   }
 
