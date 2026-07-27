@@ -268,6 +268,74 @@ function toOpenAIToolCall(parsed: any): any {
 /**
  * 从模型文本输出中解析 <tool_call> 块，返回清理后的正文与 tool_calls 列表
  */
+/**
+ * 把模型编造的工具名修正为实际提供的工具名（否则客户端会直接拒绝该调用）
+ *
+ * Repair invented tool names against the tools actually on offer. A call naming
+ * a tool the client never advertised is rejected outright, which silently burns
+ * the turn.
+ *
+ * The case that matters in practice: Codex's system prompt still documents
+ *   {"command":["apply_patch","*** Begin Patch ..."]}
+ * but no longer exposes `apply_patch` as a tool — those are the *arguments* for
+ * `shell_command`. The model copies the example faithfully and gets the
+ * arguments right while naming the wrong tool, so matching on argument shape
+ * recovers it.
+ */
+function repairToolCalls(toolCalls: any[], tools: any[]): any[] {
+  const defs = (tools || [])
+    .map((t) => (t && t.type === "function" && t.function ? t.function : t))
+    .filter((t: any) => t && t.name);
+  if (!defs.length) return toolCalls;
+
+  const names = defs.map((t: any) => t.name);
+  const flat = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  const out: any[] = [];
+  for (const tc of toolCalls) {
+    const name = tc?.function?.name || "";
+    if (names.includes(name)) {
+      out.push(tc);
+      continue;
+    }
+
+    // case / underscore / dash differences only
+    let target = names.find((n: string) => flat(n) === flat(name));
+
+    // otherwise: which advertised tool do these arguments actually fit?
+    if (!target) {
+      let args: any = {};
+      try {
+        args = JSON.parse(tc?.function?.arguments || "{}");
+      } catch {
+        args = {};
+      }
+      const keys = Object.keys(args || {});
+      if (keys.length) {
+        const scored = defs
+          .map((d: any) => {
+            const props = Object.keys(d?.parameters?.properties || {});
+            const req = d?.parameters?.required || [];
+            const hit = keys.filter((k) => props.includes(k)).length;
+            const covers = req.every((k: string) => keys.includes(k));
+            return { name: d.name, hit, covers };
+          })
+          .filter((s) => s.hit > 0 && s.covers)
+          .sort((a, b) => b.hit - a.hit);
+        if (scored.length) target = scored[0].name;
+      }
+    }
+
+    if (target) {
+      logger.info(`工具名修正 tool name repaired: ${name} -> ${target}`);
+      out.push({ ...tc, function: { ...tc.function, name: target } });
+    } else {
+      logger.warn(`丢弃未知工具调用 dropped unknown tool call: ${name}`);
+    }
+  }
+  return out;
+}
+
 function parseToolCalls(text: string): { content: string; toolCalls: any[] } {
   // On long outputs the model routinely omits the closing </tool_call>.
   // Measured on a 16.7k-char apply_patch: opens=1, closes=0, yet the inner JSON
@@ -685,7 +753,8 @@ async function createCompletion(
 
     // 工具模式：解析 <tool_call> 并以 OpenAI tool_calls 返回
     if (useTools) {
-      const { content: cleaned, toolCalls } = parseToolCalls(responseContent);
+      const { content: cleaned, toolCalls: rawCalls } = parseToolCalls(responseContent);
+      const toolCalls = repairToolCalls(rawCalls, tools);
       if (toolCalls.length) {
         return {
           id: responseId || chatId,
@@ -1112,7 +1181,7 @@ async function createResponses(model: string, body: any, token: string) {
   if (useTools) {
     const parsed = parseToolCalls(responseContent);
     textContent = parsed.content;
-    toolCalls = parsed.toolCalls;
+    toolCalls = repairToolCalls(parsed.toolCalls, tools);
   }
   const output = buildResponsesOutput(textContent, toolCalls);
   return {
@@ -1190,7 +1259,7 @@ function createResponsesStream(model: string, body: any, token: string) {
       if (useTools) {
         const parsed = parseToolCalls(responseContent);
         textContent = parsed.content;
-        toolCalls = parsed.toolCalls;
+        toolCalls = repairToolCalls(parsed.toolCalls, tools);
       }
       const output = buildResponsesOutput(textContent, toolCalls);
 
