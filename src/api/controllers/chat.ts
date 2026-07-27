@@ -1203,19 +1203,85 @@ function buildResponsesOutput(textContent: string, toolCalls: any[]): any[] {
 }
 
 /** 非流式 Responses */
+/**
+ * 判断“只说不做”的回复：承诺要做但没有发出工具调用，会让 agent 循环空转
+ *
+ * A reply that announces work without emitting a tool call. The agent loop reads
+ * it as the final answer, so the task silently stops — observed as
+ * "I'll create the file. Let me implement this properly:" and nothing else.
+ */
+function tookNoAction(text: string): boolean {
+  const low = (text || "").trim().toLowerCase();
+  if (!low) return true;
+  if (/\b(?:i|we)\s+(?:can(?:no|')?t|could\s?n[o']?t|(?:a[mr]e?|was|were)\s+unable|do\s?n[o']?t\s+have)\b/.test(low))
+    return true;
+  // Short forward-looking promises. Long replies are usually real answers that
+  // merely happen to contain "let me".
+  return (
+    low.length <= 400 &&
+    /(i'?ll |i will |let me |i'?m going to |i am going to |let's |here'?s the plan|implement this)/.test(low)
+  );
+}
+
+const NO_ACTION_NUDGE = [
+  "",
+  "",
+  "SYSTEM CORRECTION: that reply performed no action. Describing what you are about",
+  "to do accomplishes nothing — a program reads this, and nothing happens until you",
+  "emit the block. Do not apologise or restate the plan. Reply now with ONLY the",
+  "next <tool_call>, using one of the tool names listed above.",
+  "",
+  "Assistant:",
+].join("\n");
+
+/** Re-ask once when a tool-less reply did no work. */
+async function answerWithRetry(
+  model: string,
+  prompt: string,
+  token: string,
+  tools: any[],
+  useTools: boolean
+): Promise<{ textContent: string; toolCalls: any[] }> {
+  const first = await fetchQwenAnswer(model, prompt, token);
+  if (!useTools) return { textContent: first.responseContent, toolCalls: [] };
+
+  let parsed = parseToolCalls(first.responseContent);
+  let toolCalls = repairToolCalls(parsed.toolCalls, tools);
+  if (toolCalls.length || !tookNoAction(parsed.content)) {
+    return { textContent: parsed.content, toolCalls };
+  }
+
+  logger.info("回复未产生动作，重试一次 no-action reply, re-asking once");
+  const base = prompt.endsWith("Assistant:")
+    ? prompt.slice(0, -"Assistant:".length)
+    : prompt;
+  try {
+    const second = await fetchQwenAnswer(
+      model,
+      `${base}Assistant: ${parsed.content}${NO_ACTION_NUDGE}`,
+      token
+    );
+    const p2 = parseToolCalls(second.responseContent);
+    const c2 = repairToolCalls(p2.toolCalls, tools);
+    if (c2.length) return { textContent: p2.content, toolCalls: c2 };
+  } catch (err: any) {
+    logger.warn(`重试失败 retry failed: ${err?.message || err}`);
+  }
+  return { textContent: parsed.content, toolCalls };
+}
+
 async function createResponses(model: string, body: any, token: string) {
   const { instructions, input, tools, tool_choice } = body;
   const content = prepareResponsesPrompt(instructions, input, tools);
-  const { responseContent } = await fetchQwenAnswer(model, content, token);
   const useTools =
     _.isArray(tools) && tools.length > 0 && tool_choice !== "none";
-  let textContent = responseContent;
-  let toolCalls: any[] = [];
-  if (useTools) {
-    const parsed = parseToolCalls(responseContent);
-    textContent = parsed.content;
-    toolCalls = repairToolCalls(parsed.toolCalls, tools);
-  }
+  const { textContent, toolCalls } = await answerWithRetry(
+    model,
+    content,
+    token,
+    tools,
+    useTools
+  );
   const output = buildResponsesOutput(textContent, toolCalls);
   return {
     id: `resp_${util.uuid(false).slice(0, 24)}`,
@@ -1286,14 +1352,13 @@ function createResponsesStream(model: string, body: any, token: string) {
     try {
       // 注意：不把 previous_response_id 当作 chat.qwen.ai 的 chatId（两者不同），
       // Codex 每次都会重发完整历史，因此这里保持无状态。
-      const { responseContent } = await fetchQwenAnswer(model, content, token);
-      let textContent = responseContent;
-      let toolCalls: any[] = [];
-      if (useTools) {
-        const parsed = parseToolCalls(responseContent);
-        textContent = parsed.content;
-        toolCalls = repairToolCalls(parsed.toolCalls, tools);
-      }
+      const { textContent, toolCalls } = await answerWithRetry(
+        model,
+        content,
+        token,
+        tools,
+        useTools
+      );
       const output = buildResponsesOutput(textContent, toolCalls);
 
       let idx = 0;
