@@ -235,23 +235,41 @@ function toOpenAIToolCall(parsed: any): any {
  * 从模型文本输出中解析 <tool_call> 块，返回清理后的正文与 tool_calls 列表
  */
 function parseToolCalls(text: string): { content: string; toolCalls: any[] } {
+  // On long outputs the model routinely omits the closing </tool_call>.
+  // Measured on a 16.7k-char apply_patch: opens=1, closes=0, yet the inner JSON
+  // parsed perfectly — so the only thing wrong was the missing tag. Without
+  // balancing, the regex never matches and the entire block leaks to the client
+  // as prose (or, once stripped, leaves an empty response). anthropic.ts already
+  // did this; this path did not, which is why big file writes failed here.
+  let t = text;
+  const opens = (t.match(/<tool_call>/g) || []).length;
+  const closes = (t.match(/<\/tool_call>/g) || []).length;
+  if (opens > closes) t += "</tool_call>".repeat(opens - closes);
+
   const toolCalls: any[] = [];
   const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = regex.exec(t)) !== null) {
     const parsed = safeParseToolJson(match[1]);
     if (parsed && parsed.name) toolCalls.push(toOpenAIToolCall(parsed));
   }
-  let content = text.replace(regex, "").trim();
+  let content = t.replace(regex, "").trim();
 
   // 回退：模型可能省略了标签，直接输出了一个裸的工具调用 JSON
   if (!toolCalls.length) {
-    const bare = safeParseToolJson(text);
+    const bare = safeParseToolJson(t);
     if (bare && bare.name && bare.arguments !== undefined) {
       toolCalls.push(toOpenAIToolCall(bare));
       content = "";
     }
   }
+
+  // A block that matched but failed to parse would otherwise be stripped into
+  // nothing, and buildResponsesOutput emits no items for empty text + no calls —
+  // i.e. a silent empty response, which reads as the model saying nothing. Give
+  // the original text back instead so the turn is at least diagnosable.
+  if (!toolCalls.length && !content && text.trim()) content = text.trim();
+
   return { content, toolCalls };
 }
 
